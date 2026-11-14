@@ -9913,10 +9913,11 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 // `VspEmissions` & `AgentDensity` run 100% on GPU via `plume_compute.wgsl`!
                 let heatmap_rgba = if !is_gpu_compute_plume && self.heatmap_dirty {
                     self.heatmap_dirty = false;
+                    let agents_snap = self.staging.agents.clone();
                     build_heatmap_rgba(
                         &self.world,
                         self.layer,
-                        &self.staging.agents,
+                        &agents_snap,
                         &mut self.staging,
                     );
                     Some(self.staging.heatmap_rgba.clone())
@@ -10117,7 +10118,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 if self.layer == HeatmapLayer::ResponseDistricts {
                     if let Some(drep) = self.latest_diurnal_report.as_ref() {
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[CAD DISPATCH TABLE: {} | {:02}:00 | {} Peak/Off-Peak Beat Switches]",
@@ -10192,7 +10193,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 if self.layer == HeatmapLayer::FemaGsbDrcTdms {
                     if let Some(rrep) = self.latest_fema_rec_report.as_ref() {
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[FEMA 249th GSB, TDMS & DRC/MRIC ({}) | 72hPwr={:.0}% ({:.2}MW) | TDMS Saved={:.0} yd3 | IA Reg={:.1}%]",
@@ -10259,7 +10260,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 if self.layer == HeatmapLayer::WtpTurbidityStorage {
                     if let Some(wrep) = self.latest_wtp_turb_report.as_ref() {
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[WTP ASH/TURBIDITY & STORAGE ({} | Peak={:.0} NTU | Shutoff={:.1}h) | MinStor={:.1}% | HighZone={:.1} psi | BWA={:.0}%]",
@@ -10326,7 +10327,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 if self.layer == HeatmapLayer::BurnScarDebrisFlow {
                     if let Some(drep) = self.latest_debris_flow_report.as_ref() {
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[BURN-SCAR & USGS DEBRIS FLOW ({} | I15={:.0} mm/h vs P50={:.1} mm/h) | Sed={:.0} m3 | Washouts={:.1}/{} clv]",
@@ -10404,7 +10405,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 if self.layer == HeatmapLayer::WildfireAlertWestResponse {
                     if let Some(wrep) = self.latest_wildfire_report.as_ref() {
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[ALERTWEST / OHAZ WILDFIRE ({} | {} LOS Cams | CEP90={:.0}m | Det={:.1}m) | {:.1} ac | Flame={:.1}ft | Cont={:.0}%]",
@@ -10500,7 +10501,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                     if let Some(urep) = self.latest_fema_usar_report.as_ref() {
                         let snap_h = self.fema_usar_cfg.live_injection_snapshot_hour;
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[FEMA TYPE-1 US&R & ESF-3 DEBRIS ({} | Snap H+{:.0}h) | Saved={:.1} ({:.1}%) | POD Reopen={:.1}h]",
@@ -10615,7 +10616,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 if self.layer == HeatmapLayer::FemaIsbPods {
                     if let Some(prep) = self.latest_fema_pods_report.as_ref() {
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[FEMA ISB & C-PODS ({} | {}) | Served={:.1}% | Mean Wait={:.1}m | Spillback={:.0} veh]",
@@ -10723,7 +10724,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 if self.layer == HeatmapLayer::FemaCommsArchitecture {
                     if let Some(frep) = self.latest_fema_comms_report.as_ref() {
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[FEMA IPAWS & ESF-2 ({} | {}) | CAP={:.0}% | IPAWS Reach={:.1}% | NIFOG LMR={:.1}%]",
@@ -10802,7 +10803,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 if self.layer == HeatmapLayer::WarningMobilization {
                     if let Some(wrep) = self.latest_warning_report.as_ref() {
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[CELL BLACKOUT & WEA/SIREN MOBILIZATION ({} | {}) | BTS Dark={:.1}% | Warn={:.1}m | Trapped={:.0}]",
@@ -10882,7 +10883,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 if self.layer == HeatmapLayer::TransitBusEvacuation {
                     if let Some(trep) = self.latest_transit_evac_report.as_ref() {
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[GTFS BUS+EMS EVAC ({} | {}) | Clean-Air={:.1}% | Cycle={:.1}m | EMS Spine={:.0}%]",
@@ -10962,7 +10963,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 if self.layer == HeatmapLayer::CommodityResupply {
                     if let Some(rrep) = self.latest_resupply_report.as_ref() {
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[MULTI-DAY RESUPPLY ({} | {}d) | Security={:.1}% | CW Tour Sav={:.1}% | Depriv={:.0}]",
@@ -11050,7 +11051,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 if self.layer == HeatmapLayer::EmergencyShelters {
                     if let Some(sh_rep) = self.latest_shelters_report.as_ref() {
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[CLEAN-AIR SHELTERS ({} + {}) | CleanAir={:.1}% | InPM2.5={:.1} ug/m3 | Unmet={:.0}]",
@@ -11123,7 +11124,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 if self.layer == HeatmapLayer::EvacuationContraflow {
                     if let Some(erep) = self.latest_evac_report.as_ref() {
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[EVACUATION ({} + {}) | T90={:.1}m | Overrun={:.1} res | EMS-LZ Access={:.0}%]",
@@ -11195,7 +11196,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 if self.layer == HeatmapLayer::AeromedicalMedevac {
                     if let Some(mrep) = self.latest_medevac_report.as_ref() {
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[ROTARY-WING MEDEVAC ({}) | EnvOpen={:.0}% | SmokeVis={:.1} SM | Air Burn Xfer={:.2} ({:.0}m vs {:.0}m CCT)]",
@@ -11281,7 +11282,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 if self.layer == HeatmapLayer::HospitalTraumaSurge {
                     if let Some(srep) = self.latest_surge_report.as_ref() {
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[HOSPITAL ED SURGE ({}) | Golden-Hr={:.1}% | Red/Burn Wait={:.1}m | Divert={:.1}%]",
@@ -11351,7 +11352,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 if self.layer == HeatmapLayer::FireFollowingQuake {
                     if let Some(frep) = self.latest_ffe_report.as_ref() {
                         painter.text(
-                            Pos2::new(viewport_rect.left() + 14.0, viewport_rect.top() + 36.0),
+                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "[FFE CONFLAGRATION | Wind {:.1} m/s @ {:.0} deg | E[Burn]={:.1} parcels (${:.1}M) | DryHyd={:.0}%]",

@@ -219,7 +219,7 @@ pub fn hamada_hazus_spread_rates(zone: ZoneCode, wind_speed_mps: f64) -> HamadaD
     let u = wind_speed_mps.clamp(0.0, 35.0);
 
     // `(plan_dim_a_m, separation_d_m, built_density_delta, fire_resistive_ratio_fb)`
-    let (a_m, d_m, delta, f_b) = match zone {
+    let (a_m, d_m, delta, f_b): (f64, f64, f64, f64) = match zone {
         ZoneCode::R1 => (14.0, 8.5, 0.26, 0.08),
         ZoneCode::R3 => (18.0, 5.2, 0.44, 0.18), // Dense wood-frame multi-family (highest spread!)
         ZoneCode::MU4 => (24.0, 6.0, 0.48, 0.52),
@@ -630,7 +630,7 @@ pub fn run_ffe_conflagration_monte_carlo(
             let r_km = (cfg.seismic.rupture_standoff_km + ((mid.x - west_x).max(0.0)) / 1000.0).max(1.5);
             let sa = median_sa10_gmpe_g(cfg.seismic.moment_magnitude_mw, r_km, cfg.seismic.vs30_m_per_s);
             let pgv = median_pgv_cm_s_from_sa10(sa, cfg.seismic.vs30_m_per_s);
-            let d_mm = if is_art { 350.0 } else { 200.0 };
+            let d_mm: f64 = if is_art { 350.0 } else { 200.0 };
             let len_m = seg.length.max(15.0);
             let dm = d_mm / 1000.0;
             let rp = 10.67 * len_m / (125.0_f64.powf(1.852) * dm.powf(4.8704));

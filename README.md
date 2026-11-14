@@ -222,3 +222,24 @@ cargo run --release -- debris-flow --scenario corvallis --baer-policy full-baer 
 # Run 72-Hour Post-Wildfire WTP Turbidity Shutoff, Coagulant Dosing & Finished-Water Storage Drawdown
 cargo run --release -- wtp-turbidity --scenario corvallis --policy ferric-pac-wells --shutoff-ntu 350 --wells-mgd 5.5
 ```
+
+## Citation & CRV Science Apps Hub
+
+- **CRV Science Apps Hub**: [https://crvscience.com/apps](https://crvscience.com/apps)
+- **Companion Preprint (`APP-PREPRINT-11`)**: *Urban-Grid: Microscopic Traffic Simulation, Maximal Covering Emergency Siting, and Multi-Hazard Lifeline Resilience* — [https://crvscience.com/apps/preprints/urban-grid-microscopic-traffic-resilience](https://crvscience.com/apps/preprints/urban-grid-microscopic-traffic-resilience)
+- **Concept DOI**: [10.5281/zenodo.24222394](https://doi.org/10.5281/zenodo.24222394)
+- **Repository**: [https://github.com/bpwhite/crvscience-urban-grid](https://github.com/bpwhite/crvscience-urban-grid)
+- **Validation Telemetry**: See [`validation/README.md`](validation/README.md) (`cargo test --workspace`).
+
+```bibtex
+@article{white2026urbangrid,
+  author  = {White, Bryan P.},
+  title   = {Urban-Grid: Microscopic Traffic Simulation, Maximal Covering Emergency Siting, and Multi-Hazard Lifeline Resilience},
+  journal = {CRV Science Apps Preprints},
+  year    = {2026},
+  doi     = {10.5281/zenodo.24222394},
+  url     = {https://crvscience.com/apps/preprints/urban-grid-microscopic-traffic-resilience},
+  note    = {Preprint ID: APP-PREPRINT-11; Software version 5.2.0}
+}
+```
+

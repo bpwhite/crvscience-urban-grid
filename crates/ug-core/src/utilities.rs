@@ -757,7 +757,7 @@ pub fn evaluate_coupled_utility_grids(
     let edge_hw_k: Vec<(f64, f64)> = edges
         .iter()
         .map(|e| {
-            let diam_m = if e.is_arterial { 0.35 } else { 0.20 };
+            let diam_m: f64 = if e.is_arterial { 0.35 } else { 0.20 };
             let r_pipe = 10.67 * e.len_m
                 / (cfg.hazen_williams_c.clamp(60.0, 150.0).powf(1.852) * diam_m.powf(4.8704));
             let k_hw = (1.0 / r_pipe.max(1e-9)).powf(1.0 / 1.852);

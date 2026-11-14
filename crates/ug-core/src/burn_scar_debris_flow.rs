@@ -910,8 +910,12 @@ pub fn run_burn_scar_debris_flow_monte_carlo(
         }
     }
     let mut temp_parcels = parcels.to_vec();
-    let cov_summary =
-        crate::emergency::evaluate_emergency_coverage(&washed_net, &mut temp_parcels, facilities);
+    let (cov_summary, _, _) = crate::emergency::evaluate_emergency_coverage(
+        &washed_net,
+        &mut temp_parcels,
+        facilities,
+        &crate::emergency::EvpConfig::default(),
+    );
 
     // 7. Sample USGS Intensity-Duration Curve across `I15 = 8..=80 mm/hr` for interactive plotting
     let mut id_threshold_curve = Vec::with_capacity(13);
@@ -987,7 +991,7 @@ pub fn run_burn_scar_debris_flow_monte_carlo(
     BurnScarDebrisFlowReport {
         config: cfg.clone(),
         solve_time_ms: t0.elapsed().as_secs_f64() * 1000.0,
-        burned_watershed_area_km2,
+        burned_watershed_area_km2: burned_area_km2,
         mean_post_fire_curve_number: cn_sum / (n_basins as f64),
         mean_hydrophobic_runoff_depth_mm,
         unburned_baseline_runoff_mm: unburned_runoff_mm,

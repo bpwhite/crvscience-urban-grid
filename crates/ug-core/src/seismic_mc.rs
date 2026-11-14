@@ -812,11 +812,10 @@ impl SeismicMonteCarloReport {
     pub fn to_pipeline_csv_string(&self) -> String {
         let mut out = String::with_capacity(self.pipeline_inventory.len() * 120 + 256);
         out.push_str(SEISMIC_PIPELINE_CSV_HEADER);
-        out.push('
-');
+        out.push('\n');
         for p in &self.pipeline_inventory {
             let esc = if p.label.contains(',') || p.label.contains('"') {
-                format!(""{}"", p.label.replace('"', """"))
+                format!("\"{}\"", p.label.replace('"', "\"\""))
             } else {
                 p.label.clone()
             };
@@ -853,7 +852,7 @@ impl SeismicMonteCarloReport {
     }
 }
 
-fn median_sa10_gmpe_g(mw: f64, r_rup_km: f64, vs30_mps: f64) -> f64 {
+pub fn median_sa10_gmpe_g(mw: f64, r_rup_km: f64, vs30_mps: f64) -> f64 {
     let m = mw.clamp(5.0, 9.3);
     let r = r_rup_km.max(1.5);
     let h_eff = (2.5 + (0.48 * (m - 6.0)).exp().min(18.0)).max(3.5);
@@ -1062,7 +1061,7 @@ pub fn median_pgv_cm_s_from_sa10(sa10_g: f64, vs30_mps: f64) -> f64 {
 }
 
 #[inline]
-fn median_pga_g_from_sa10(sa10_g: f64, vs30_mps: f64) -> f64 {
+pub fn median_pga_g_from_sa10(sa10_g: f64, vs30_mps: f64) -> f64 {
     let stiff = (vs30_mps.clamp(140.0, 1100.0) / 270.0).powf(0.16);
     (0.86 * sa10_g.max(0.001) * stiff).clamp(0.005, 3.0)
 }
@@ -1398,8 +1397,8 @@ pub fn run_seismic_monte_carlo_simulation(
             let r_km = (cfg.rupture_standoff_km + local_km).max(1.5);
             let med_sa = median_sa10_gmpe_g(cfg.moment_magnitude_mw, r_km, cfg.vs30_m_per_s);
             let med_pgv = median_pgv_cm_s_from_sa10(med_sa, cfg.vs30_m_per_s);
-            let w_d_mm = if is_art { 350.0 } else { 200.0 };
-            let s_d_mm = if is_art { 450.0 } else { 280.0 };
+            let w_d_mm: f64 = if is_art { 350.0 } else { 200.0 };
+            let s_d_mm: f64 = if is_art { 450.0 } else { 280.0 };
             let len_m = seg.length.max(15.0);
             let d_m = w_d_mm / 1000.0;
             let r_pipe = 10.67 * len_m / (125.0_f64.powf(1.852) * d_m.powf(4.8704));
@@ -1863,7 +1862,7 @@ pub fn run_seismic_monte_carlo_simulation(
             let mut day0_isolated = 0usize;
 
             for (ep_i, &day) in RECOVERY_TIMELINE_DAYS.iter().enumerate() {
-                let mut seg_mult = vec![1.0; n_segs];
+                let mut seg_mult = vec![1.0_f64; n_segs];
                 let mut closed_seg_ids = Vec::new();
                 let mut closed_b = 0usize;
                 let mut deg_b = 0usize;

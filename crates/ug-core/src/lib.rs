@@ -363,7 +363,7 @@ mod tests {
         build_heatmap_rgba(
             &world,
             HeatmapLayer::AgentDensity,
-            &arena.agents,
+            &arena.agents.clone(),
             &mut arena,
         );
 
@@ -978,7 +978,7 @@ mod tests {
         build_heatmap_rgba(
             &world,
             HeatmapLayer::EmergencyResponse4Min,
-            &arena.agents,
+            &arena.agents.clone(),
             &mut arena,
         );
         assert_eq!(arena.heatmap_rgba.len(), HEATMAP_BYTE_LEN);
@@ -1559,10 +1559,10 @@ mod tests {
             ("Engine 3 (Suburb)".to_string(), 2, Vec2 { x: 380.0, y: 0.0 }),
         ];
         let atom_xs = [
-            -20.0, 15.0, 45.0, 72.0, 86.0, 105.0, 145.0, 195.0, 245.0, 278.0, 325.0, 400.0,
+            -20.0_f64, 15.0, 45.0, 72.0, 86.0, 105.0, 145.0, 195.0, 245.0, 278.0, 325.0, 400.0,
         ];
         // Travel time `t_{u, j} = 40 + |x_u - x_j| * 0.85` seconds
-        let unit_xs = [0.0, 180.0, 380.0];
+        let unit_xs = [0.0_f64, 180.0, 380.0];
         let times_s: Vec<Vec<f64>> = unit_xs
             .iter()
             .map(|&ux| atom_xs.iter().map(|&ax| 40.0 + (ux - ax).abs() * 0.85).collect())
@@ -2466,7 +2466,15 @@ mod tests {
         );
         assert!(
             ems_prot_cf.expected_fire_overrun_residents
-                <= unstaged_no_cf.expected_fire_overrun_residents + 1e-6
+                <= unstaged_no_cf.expected_fire_overrun_residents + 1e-6,
+            "ems_prot_cf overrun {:.4} (t90={:.2}, peak_vc={:.3}, cf={}) > unstaged_no_cf overrun {:.4} (t90={:.2}, peak_vc={:.3})",
+            ems_prot_cf.expected_fire_overrun_residents,
+            ems_prot_cf.t90_clearance_min,
+            ems_prot_cf.peak_bottleneck_vc_ratio,
+            ems_prot_cf.contraflow_reversed_segments_count,
+            unstaged_no_cf.expected_fire_overrun_residents,
+            unstaged_no_cf.t90_clearance_min,
+            unstaged_no_cf.peak_bottleneck_vc_ratio
         );
 
         let full_oneway = world.run_evacuation_contraflow_mc(&EvacuationContraflowConfig {
@@ -2741,7 +2749,7 @@ mod tests {
         // 1. Verify TCQSM emergency all-door boarding dwell & 60-ft articulated vs 40-ft coach throughput
         let (cap40, dw_cash) = compute_evac_coach_capacity_and_dwell_min(
             BusCoachSpec::Standard40Ft,
-            BoardingFareMode::CashBoxFrontDoor,
+            BoardingFareMode::FrontDoorCash,
             50.0,
         );
         let (cap60, dw_brt) = compute_evac_coach_capacity_and_dwell_min(
@@ -2802,7 +2810,7 @@ mod tests {
             lane_mode: BusContraflowLaneMode::MixedAutoQueueNoPriority,
             dispatch_strategy: TransitDispatchStrategy::FixedGtfsHeadwayLoop,
             coach_spec: BusCoachSpec::Standard40Ft,
-            fare_mode: BoardingFareMode::CashBoxFrontDoor,
+            fare_mode: BoardingFareMode::FrontDoorCash,
             transit_bus_fleet: 6,
             ada_paratransit_vans: 4,
             max_pickup_depots: 8,
@@ -2836,10 +2844,28 @@ mod tests {
         );
         assert!(
             priority_rep.combined_clean_air_sheltered_pct + 1e-6
-                >= mixed_rep.combined_clean_air_sheltered_pct
+                >= mixed_rep.combined_clean_air_sheltered_pct,
+            "priority clean={:.4}% (carless={:.2}%, ada={:.2}%, clean_sh={:.2}, trips={:.1}) < mixed clean={:.4}% (carless={:.2}%, ada={:.2}%, clean_sh={:.2}, trips={:.1})",
+            priority_rep.combined_clean_air_sheltered_pct,
+            priority_rep.evacuated_carless_pct,
+            priority_rep.evacuated_ada_pct,
+            priority_rep.open_clean_air_shelters_count,
+            priority_rep.mean_trips_per_bus,
+            mixed_rep.combined_clean_air_sheltered_pct,
+            mixed_rep.evacuated_carless_pct,
+            mixed_rep.evacuated_ada_pct,
+            mixed_rep.open_clean_air_shelters_count,
+            mixed_rep.mean_trips_per_bus
         );
         assert!(priority_rep.stranded_vulnerable_pax <= mixed_rep.stranded_vulnerable_pax + 1e-6);
-        assert!(priority_rep.ems_inbound_access_preserved_pct >= 80.0);
+        assert!(
+            priority_rep.ems_inbound_access_preserved_pct >= 80.0,
+            "priority ems_ok={:.2}% < 80.0 (mixed ems_ok={:.2}%, cf_segs={}, depots={})",
+            priority_rep.ems_inbound_access_preserved_pct,
+            mixed_rep.ems_inbound_access_preserved_pct,
+            priority_rep.bus_ems_contraflow_segments_count,
+            priority_rep.active_pickup_depots_count,
+        );
 
         // 3. Verify undoable live Bus+EMS contraflow network mutation + Ctrl+Z / Ctrl+Y
         let undo_before = world.edit_history.undo_len();

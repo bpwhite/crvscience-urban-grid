@@ -30,7 +30,7 @@ pub enum LightColor {
     Red,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Vec2 {
     pub x: f64,
     pub y: f64,
@@ -335,38 +335,42 @@ impl RoadNetwork {
         let mut junc_by_osm: HashMap<String, usize> = HashMap::new();
         let mut junctions: Vec<Junction> = Vec::new();
 
-        let mut ensure_junc = |osm_id: &str| -> usize {
-            if let Some(&jid) = junc_by_osm.get(osm_id) {
-                return jid;
-            }
-            let nd = &osm.nodes[osm_id];
-            let (x, y) = proj.project(nd.lat, nd.lon);
-            let jid = junctions.len();
-            junctions.push(Junction {
-                id: jid,
-                osm_node_id: osm_id.to_string(),
-                pos: Vec2 { x, y },
-                in_segs: Vec::new(),
-                out_segs: Vec::new(),
-                connectors: Vec::new(),
-                is_roundabout_node: false,
-                arm_count: 0,
-                control_mode: ControlMode::PermissiveYield,
-                ns_green_s: 22.0,
-                ew_green_s: 20.0,
-                yellow_s: 3.5,
-                all_red_s: 1.5,
-                offset_s: 0.0,
-                hold_phase: false,
-                held_at_s: 0.0,
-                manual_step_offset_s: 0.0,
-                axis_angle: 0.0,
-                mp_state: JunctionMpState::default(),
-                evp_state: JunctionEvpState::default(),
-            });
-            junc_by_osm.insert(osm_id.to_string(), jid);
-            jid
-        };
+        macro_rules! ensure_junc {
+            ($osm_id:expr) => {{
+                let oid: &str = $osm_id;
+                if let Some(&jid) = junc_by_osm.get(oid) {
+                    jid
+                } else {
+                    let nd = &osm.nodes[oid];
+                    let (x, y) = proj.project(nd.lat, nd.lon);
+                    let jid = junctions.len();
+                    junctions.push(Junction {
+                        id: jid,
+                        osm_node_id: oid.to_string(),
+                        pos: Vec2 { x, y },
+                        in_segs: Vec::new(),
+                        out_segs: Vec::new(),
+                        connectors: Vec::new(),
+                        is_roundabout_node: false,
+                        arm_count: 0,
+                        control_mode: ControlMode::PermissiveYield,
+                        ns_green_s: 22.0,
+                        ew_green_s: 20.0,
+                        yellow_s: 3.5,
+                        all_red_s: 1.5,
+                        offset_s: 0.0,
+                        hold_phase: false,
+                        held_at_s: 0.0,
+                        manual_step_offset_s: 0.0,
+                        axis_angle: 0.0,
+                        mp_state: JunctionMpState::default(),
+                        evp_state: JunctionEvpState::default(),
+                    });
+                    junc_by_osm.insert(oid.to_string(), jid);
+                    jid
+                }
+            }};
+        }
 
         // Split ways at topological junctions
         let mut segments: Vec<RoadSegment> = Vec::new();
@@ -439,8 +443,8 @@ impl RoadNetwork {
                             .collect();
                         let raw_len = polyline_length(&pts_fwd);
                         if raw_len >= 8.0 {
-                            let u = ensure_junc(slice[0]);
-                            let v = ensure_junc(slice[slice.len() - 1]);
+                            let u = ensure_junc!(slice[0]);
+                            let v = ensure_junc!(slice[slice.len() - 1]);
                             if is_rb {
                                 junctions[u].is_roundabout_node = true;
                                 junctions[v].is_roundabout_node = true;

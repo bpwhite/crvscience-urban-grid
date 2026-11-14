@@ -776,7 +776,7 @@ pub fn run_aeromedical_medevac_monte_carlo(
         }
     }
 
-    let bridges = enumerate_seismic_bridge_inventory(net, &cfg.surge.ffe.seismic);
+    let bridges = enumerate_seismic_bridge_inventory(net, facilities, &cfg.surge.ffe.seismic);
     let n_br = bridges.len();
 
     let mut u_corridors: Vec<(usize, f64, Vec2, bool)> = Vec::new();
@@ -976,8 +976,8 @@ pub fn run_aeromedical_medevac_monte_carlo(
                 }
                 eps_intra[i] = s;
             }
-            let tau_b = cfg.surge.ffe.seismic.inter_event_tau;
-            let phi_w = cfg.surge.ffe.seismic.intra_event_phi;
+            let tau_b = cfg.surge.ffe.seismic.inter_event_sigma_ln;
+            let phi_w = cfg.surge.ffe.seismic.intra_event_sigma_ln;
 
             // Trial gust perturbation around configured FFE wind speed (`+-12%`)
             let trial_wind_mps =
@@ -1100,9 +1100,10 @@ pub fn run_aeromedical_medevac_monte_carlo(
                 };
                 let rr = ala_hazus_pipe_repair_rate_per_km(
                     pgv,
+                    cfg.surge.ffe.seismic.pipe_fragility_law,
                     mat,
                     if is_art { 300.0 } else { 200.0 },
-                    cfg.surge.ffe.seismic.pipe_fragility_law,
+                    false,
                 );
                 let n_rep = sample_poisson_icdf(rr * (len_m / 1000.0), rng.next_f64_open01());
                 if n_rep > 0 {

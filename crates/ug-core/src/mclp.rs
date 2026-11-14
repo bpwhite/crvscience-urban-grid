@@ -556,7 +556,7 @@ fn evaluate_fleet_metrics(
             obj_score: 1.0,
             distinct_stations,
             total_apparatus: m_total,
-            busy_q,
+            busy_q: q,
             parcel_cov_pct: 100.0,
             resident_cov_pct: 100.0,
             expected_cov_pct: 100.0,

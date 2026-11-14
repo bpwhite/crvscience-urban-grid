@@ -414,16 +414,18 @@ fn build_seg_adjacency(net: &RoadNetwork) -> Vec<Vec<(usize, f64)>> {
     let n = net.segments.len();
     let mut adj = vec![Vec::new(); n];
     for c in &net.connectors {
-        if c.from_lane >= net.lanes.len() || c.to_lane >= net.lanes.len() {
+        if c.from_lane_id >= net.lanes.len() || c.to_lane_id >= net.lanes.len() {
             continue;
         }
-        let u = net.lanes[c.from_lane].segment_id;
-        let v = net.lanes[c.to_lane].segment_id;
+        let u = net.lanes[c.from_lane_id].segment_id;
+        let v = net.lanes[c.to_lane_id].segment_id;
         if u < n && v < n && u != v {
             let turn_s = match net.junctions[c.junction_id].control_mode {
                 ControlMode::Roundabout => 2.5,
-                ControlMode::MaxPressure => 4.2,
-                ControlMode::FixedSignal => match c.turn_type {
+                ControlMode::MaxPressureAdaptive => 4.2,
+                ControlMode::Signal2Phase
+                | ControlMode::Signal4PhaseProtectedLeft
+                | ControlMode::PermissiveYield => match c.turn_type {
                     TurnType::Through => 4.5,
                     TurnType::Right => 5.5,
                     TurnType::Left => 8.0,
@@ -633,12 +635,16 @@ pub fn run_fema_isb_pods_monte_carlo(
         }
         r
     };
-    let bridges = enumerate_seismic_bridge_inventory(net, seis_cfg);
+    let bridges = enumerate_seismic_bridge_inventory(net, facilities, seis_cfg);
 
-    // Compute per-parcel household counts & carless share (`3.0` residents per household vehicle per USACE IS-26!)
+    // Compute per-parcel household counts & carless share (`3.0` residents per household vehicle per USACE IS-26!).
+    // Each parcel on a simplified OSM city grid represents a municipal TAZ catchment feeding countywide C-PODs
+    // (`5,000-20,000 pax/day` USACE throughput & `1,400-kit` 53-ft ISB trailers), so scale synthetic small-grid counts
+    // up to a realistic >=36,000-resident county catchment while leaving megacity parcel sets unscaled.
     let mut parcel_pop = vec![24.0f64; n_parcels];
     let mut parcel_carless_share = vec![0.12f64; n_parcels];
     let mut parcel_seg = vec![0usize; n_parcels];
+    let mut raw_pop_sum = 0.0f64;
     for (pi, p) in parcels.iter().enumerate() {
         let (z_mult, c_sh) = match p.zone {
             ZoneCode::CBD => (1.35, 0.34),
@@ -648,18 +654,24 @@ pub fn run_fema_isb_pods_monte_carlo(
             ZoneCode::R1 => (1.05, 0.06),
             ZoneCode::PARK => (0.45, 0.12),
         };
-        parcel_pop[pi] =
-            ((16.0 + p.trip_weight * 2.8 + (p.area_m2 / 480.0).min(28.0)) * z_mult).clamp(8.0, 88.0);
+        let area_m2 = p.area_ha * 10_000.0;
+        let est_pop = p.residents() * 0.42 + p.jobs() * 0.55;
+        let raw_p = ((16.0 + est_pop * 0.45 + (area_m2 / 480.0).min(28.0)) * z_mult).clamp(8.0, 88.0);
+        parcel_pop[pi] = raw_p;
+        raw_pop_sum += raw_p;
         parcel_carless_share[pi] = c_sh;
         parcel_seg[pi] = nearest_open_seg(net, p.center).0;
     }
+    let county_catchment_scale = (36_000.0 / raw_pop_sum.max(1.0)).clamp(1.0, 24.0);
+    for pop in &mut parcel_pop {
+        *pop *= county_catchment_scale;
+    }
 
-    let base_sa10_g = {
-        let m_term = (0.82 * (seis_cfg.moment_magnitude_mw - 6.0)).exp();
-        let r_eff = (seis_cfg.rupture_standoff_km.hypot(7.5)).max(3.5);
-        let site_amp = (360.0 / seis_cfg.vs30_m_per_s.clamp(140.0, 900.0)).powf(0.45);
-        (0.26 * m_term * (12.0 / r_eff).powf(0.82) * site_amp).clamp(0.05, 1.85)
-    };
+    let base_sa10_g = crate::seismic_mc::median_sa10_gmpe_g(
+        seis_cfg.moment_magnitude_mw,
+        seis_cfg.rupture_standoff_km,
+        seis_cfg.vs30_m_per_s,
+    );
 
     // Uncoordinated panic morning rush profile vs. IPAWS Odd/Even staggered flat 12-hour shift profile!
     let rush_hour_weights: [f64; 12] = [
@@ -712,28 +724,27 @@ pub fn run_fema_isb_pods_monte_carlo(
             );
             let z_q = rng.next_standard_normal();
             let sa10_city = (base_sa10_g * (0.35 * z_q).exp()).clamp(0.03, 2.6);
-            let pga_city = (sa10_city * 1.12).clamp(0.04, 2.5);
+            let pga_city =
+                crate::seismic_mc::median_pga_g_from_sa10(sa10_city, seis_cfg.vs30_m_per_s);
             let pgv_cm_s = median_pgv_cm_s_from_sa10(sa10_city, seis_cfg.vs30_m_per_s);
             let pipe_rr = ala_hazus_pipe_repair_rate_per_km(
                 pgv_cm_s,
+                seis_cfg.pipe_fragility_law,
                 seis_cfg.baseline_water_pipe_material,
-                1.0,
+                250.0,
+                false,
             );
 
             // Bridge seismic closures
             let mut seg_closed = vec![false; n_seg];
             let mut closed_br_cnt = 0usize;
             for br in &bridges {
-                let med_ext = if br.seismically_retrofitted {
-                    br.archetype.median_sa10_extensive_g() * 1.42
-                } else {
-                    br.archetype.median_sa10_extensive_g()
-                };
-                if rng.next_f64_open01() < normal_cdf_phi((sa10_city / med_ext.max(0.12)).ln() / 0.60)
-                {
+                if rng.next_f64_open01() < br.effective_archetype.exceedance_probs(sa10_city)[2] {
                     closed_br_cnt += 1;
-                    if br.segment_id < n_seg {
-                        seg_closed[br.segment_id] = true;
+                    for &sid in &br.segment_ids {
+                        if sid < n_seg {
+                            seg_closed[sid] = true;
+                        }
                     }
                 }
             }
@@ -1097,12 +1108,12 @@ pub fn run_fema_isb_pods_monte_carlo(
             }
 
             // Compute street spillback speed degradation factors `seg_spill_fac` on segments adjacent to congested PODs
-            let mut seg_spill_fac = vec![1.0; n_seg];
+            let mut seg_spill_fac = vec![1.0_f64; n_seg];
             for (j, pd) in pods.iter().enumerate() {
                 if pod_peak_spill[j] > 1.0 && pd.segment_id < n_seg {
-                    let drop = (1.0 / (1.0 + 0.022 * pod_peak_spill[j])).clamp(0.28, 1.0);
+                    let drop: f64 = (1.0 / (1.0 + 0.022 * pod_peak_spill[j])).clamp(0.28, 1.0);
                     seg_spill_fac[pd.segment_id] = seg_spill_fac[pd.segment_id].min(drop);
-                    let j_in = net.segments[pd.segment_id].from_junction;
+                    let j_in = net.segments[pd.segment_id].from_junc;
                     for &in_s in &net.junctions[j_in].in_segs {
                         if in_s < n_seg {
                             seg_spill_fac[in_s] =

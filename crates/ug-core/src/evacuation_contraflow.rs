@@ -502,7 +502,7 @@ pub fn plan_contraflow_and_protected_ems_corridors(
                         } else if in_lanes >= 2 {
                             cf_added[s.id] = in_lanes - 1;
                             rem_inbound[in_sid] = 1;
-                        } else if s.lane_count >= 2 && in_lanes == 1 {
+                        } else if s.lane_count >= 1 && in_lanes == 1 {
                             // Parallel non-EMS arterial can donate 1 lane while preserving twin EMS spine
                             cf_added[s.id] = 1;
                             rem_inbound[in_sid] = 0;
@@ -704,7 +704,7 @@ pub fn run_evacuation_contraflow_monte_carlo(
         }
     }
 
-    let bridges = enumerate_seismic_bridge_inventory(net, &cfg.medevac.surge.ffe.seismic);
+    let bridges = enumerate_seismic_bridge_inventory(net, facilities, &cfg.medevac.surge.ffe.seismic);
     let n_br = bridges.len();
 
     let mut u_corridors: Vec<(usize, f64, Vec2, bool)> = Vec::new();
@@ -781,13 +781,13 @@ pub fn run_evacuation_contraflow_monte_carlo(
         }
     }
 
-    // Effective lane capacities (`vehicles / 10-min wave`):
-    // Normal lane ~1,650 veh/hr = 275 veh/10m; Wolshon contraflow reversed lane ~0.82 efficiency = 225 veh/10m!
+    // Effective urban signalized lane capacities (`vehicles / 10-min wave`):
+    // Arterial intersection saturation flow ~1,050 veh/hr = 175 veh/10m; Wolshon contraflow ~0.82 efficiency = 145 veh/10m!
     let eff_evac_cap_10m: Vec<f64> = (0..n_segs)
         .map(|sid| {
             let base_l = rem_inbound[sid] as f64;
             let cf_l = cf_added[sid] as f64;
-            (base_l * 275.0 + cf_l * 225.0).max(0.0)
+            (base_l * 175.0 + cf_l * 145.0).max(0.0)
         })
         .collect();
 
@@ -875,8 +875,8 @@ pub fn run_evacuation_contraflow_monte_carlo(
                 }
                 eps_intra[i] = s;
             }
-            let tau_b = cfg.medevac.surge.ffe.seismic.inter_event_tau;
-            let phi_w = cfg.medevac.surge.ffe.seismic.intra_event_phi;
+            let tau_b = cfg.medevac.surge.ffe.seismic.inter_event_sigma_ln;
+            let phi_w = cfg.medevac.surge.ffe.seismic.intra_event_sigma_ln;
 
             // 1. Seismic bridge closures
             let mut br_closed = vec![false; n_segs];
@@ -920,9 +920,10 @@ pub fn run_evacuation_contraflow_monte_carlo(
                 };
                 let rr = ala_hazus_pipe_repair_rate_per_km(
                     pgv,
+                    cfg.medevac.surge.ffe.seismic.pipe_fragility_law,
                     mat,
                     if is_art { 300.0 } else { 200.0 },
-                    cfg.medevac.surge.ffe.seismic.pipe_fragility_law,
+                    false,
                 );
                 let n_rep = sample_poisson_icdf(rr * (len_m / 1000.0), rng.next_f64_open01());
                 if n_rep > 0 {
@@ -1068,18 +1069,22 @@ pub fn run_evacuation_contraflow_monte_carlo(
                 let stg = match cfg.staging_strategy {
                     EvacuationStagingStrategy::SimultaneousUnstaged => 1,
                     EvacuationStagingStrategy::FireProximityThreeStage => {
-                        if bt <= 55.0 || vis60 < 1.1 {
+                        let s2_min_bt = cfg.stage2_release_delay_min.clamp(5.0, 90.0) + 110.0;
+                        let s3_min_bt = cfg.stage3_release_delay_min.clamp(10.0, 140.0) + 125.0;
+                        if bt <= s2_min_bt || vis60 < 1.35 {
                             1
-                        } else if bt <= 135.0 || vis60 < 2.6 {
+                        } else if bt <= s3_min_bt || vis60 < 2.6 {
                             2
                         } else {
                             3
                         }
                     }
                     EvacuationStagingStrategy::VulnerabilityAndFireWeighted => {
-                        if bt <= 75.0 || (high_vuln && (bt <= 140.0 || vis60 < 2.2)) {
+                        let s2_min_bt = cfg.stage2_release_delay_min.clamp(5.0, 90.0) + 115.0;
+                        let s3_min_bt = cfg.stage3_release_delay_min.clamp(10.0, 140.0) + 135.0;
+                        if bt <= s2_min_bt || (high_vuln && (bt <= s3_min_bt || vis60 < 2.2)) {
                             1
-                        } else if bt <= 160.0 || high_vuln || vis60 < 3.2 {
+                        } else if bt <= s3_min_bt || high_vuln || vis60 < 3.2 {
                             2
                         } else {
                             3
@@ -1241,8 +1246,8 @@ pub fn run_evacuation_contraflow_monte_carlo(
                 }
 
                 // Update parcel-level effective clearance progress accounting for downstream bottleneck delay
-                let net_cong_delay_min = if max_wave_vc > 0.85 {
-                    ((max_wave_vc - 0.85).powf(1.35)) * 14.5
+                let net_cong_delay_min = if max_wave_vc > 0.55 {
+                    ((max_wave_vc - 0.55).powf(1.35)) * 18.0
                 } else {
                     0.0
                 };

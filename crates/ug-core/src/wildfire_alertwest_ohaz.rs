@@ -465,16 +465,17 @@ pub fn project_cameras_to_bounds(cameras: &mut [AlertWestOhazCameraSite], bounds
     let d_lat = (max_lat - min_lat).max(1e-4);
     let d_lon = (max_lon - min_lon).max(1e-4);
 
+    let n_cams = cameras.len();
     for (idx, cam) in cameras.iter_mut().enumerate() {
         if cam.world_pos.x.abs() > 1e-3 || cam.world_pos.y.abs() > 1e-3 {
             continue;
         }
-        let u = if cameras.len() == 1 {
+        let u = if n_cams == 1 {
             0.85
         } else {
             ((cam.lon - min_lon) / d_lon).clamp(0.0, 1.0)
         };
-        let v = if cameras.len() == 1 {
+        let v = if n_cams == 1 {
             0.15
         } else {
             // Screen/world +Y is South in metric SVG/OSM projections (`min_y` = North ridge)

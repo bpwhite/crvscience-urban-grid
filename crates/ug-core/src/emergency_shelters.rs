@@ -848,7 +848,7 @@ pub fn run_emergency_shelters_monte_carlo(
         }
     }
 
-    let bridges = enumerate_seismic_bridge_inventory(net, seis);
+    let bridges = enumerate_seismic_bridge_inventory(net, facilities, seis);
     let n_br = bridges.len();
 
     let mut u_corridors: Vec<(usize, f64, Vec2, bool)> = Vec::new();
@@ -1000,8 +1000,8 @@ pub fn run_emergency_shelters_monte_carlo(
                 }
                 eps_intra[i] = s;
             }
-            let tau_b = seis.inter_event_tau;
-            let phi_w = seis.intra_event_phi;
+            let tau_b = seis.inter_event_sigma_ln;
+            let phi_w = seis.intra_event_sigma_ln;
 
             // 1. Bridge closures
             let mut br_closed = vec![false; n_segs];
@@ -1047,15 +1047,17 @@ pub fn run_emergency_shelters_monte_carlo(
                 };
                 let rr_w = ala_hazus_pipe_repair_rate_per_km(
                     pgv,
+                    seis.pipe_fragility_law,
                     w_mat,
                     if is_art { 300.0 } else { 200.0 },
-                    seis.pipe_fragility_law,
+                    false,
                 );
                 let rr_s = ala_hazus_pipe_repair_rate_per_km(
                     pgv,
+                    seis.pipe_fragility_law,
                     s_mat,
                     250.0,
-                    seis.pipe_fragility_law,
+                    true,
                 );
                 let nw = sample_poisson_icdf(rr_w * (len_m / 1000.0), rng.next_f64_open01());
                 if nw > 0 {

@@ -387,15 +387,18 @@ fn build_undirected_seg_graph(net: &RoadNetwork) -> Vec<Vec<(usize, f64)>> {
     let n = net.segments.len();
     let mut adj = vec![Vec::new(); n];
     for c in &net.connectors {
-        if c.from_lane >= net.lanes.len() || c.to_lane >= net.lanes.len() {
+        if c.from_lane_id >= net.lanes.len() || c.to_lane_id >= net.lanes.len() {
             continue;
         }
-        let u = net.lanes[c.from_lane].segment_id;
-        let v = net.lanes[c.to_lane].segment_id;
+        let u = net.lanes[c.from_lane_id].segment_id;
+        let v = net.lanes[c.to_lane_id].segment_id;
         if u < n && v < n && u != v {
             let turn_h = match net.junctions[c.junction_id].control_mode {
                 ControlMode::Roundabout => 0.001,
-                ControlMode::MaxPressure | ControlMode::FixedSignal => match c.turn_type {
+                ControlMode::MaxPressureAdaptive
+                | ControlMode::Signal2Phase
+                | ControlMode::Signal4PhaseProtectedLeft
+                | ControlMode::PermissiveYield => match c.turn_type {
                     TurnType::Through | TurnType::Right => 0.0015,
                     TurnType::Left => 0.0025,
                 },
@@ -613,7 +616,7 @@ pub fn run_fema_usar_debris_monte_carlo(
     }
 
     let adj = build_undirected_seg_graph(net);
-    let bridges = enumerate_seismic_bridge_inventory(net, seis_cfg);
+    let bridges = enumerate_seismic_bridge_inventory(net, facilities, seis_cfg);
 
     let base_sa10_g = {
         let m_term = (0.82 * (seis_cfg.moment_magnitude_mw - 6.0)).exp();
@@ -680,15 +683,12 @@ pub fn run_fema_usar_debris_monte_carlo(
                 }
             }
             for br in &bridges {
-                let med_ext = if br.seismically_retrofitted {
-                    br.archetype.median_sa10_extensive_g() * 1.45
-                } else {
-                    br.archetype.median_sa10_extensive_g()
-                };
-                if rng.next_f64_open01() < normal_cdf_phi((sa10_city / med_ext.max(0.12)).ln() / 0.60)
-                    && br.segment_id < n_seg
-                {
-                    seg_perm_closed[br.segment_id] = true;
+                if rng.next_f64_open01() < br.effective_archetype.exceedance_probs(sa10_city)[2] {
+                    for &sid in &br.segment_ids {
+                        if sid < n_seg {
+                            seg_perm_closed[sid] = true;
+                        }
+                    }
                 }
             }
 
@@ -700,7 +700,8 @@ pub fn run_fema_usar_debris_monte_carlo(
 
             for (pi, p) in parcels.iter().enumerate() {
                 let pga_loc = (pga_city * (0.85 + 0.30 * rng.next_f64_open01())).clamp(0.04, 2.8);
-                let (tot_t, spill_t) = hazus_parcel_collapse_debris_tons(p.area_m2, p.zone, pga_loc);
+                let (tot_t, spill_t) =
+                    hazus_parcel_collapse_debris_tons(p.area_ha * 10_000.0, p.zone, pga_loc);
                 p_debris[pi] = tot_t;
                 let b_seg = parcel_border_seg[pi];
                 if b_seg < n_seg {
@@ -952,7 +953,7 @@ pub fn run_fema_usar_debris_monte_carlo(
                         .iter()
                         .enumerate()
                         .min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(Ordering::Equal))
-                        .unwrap_or((0, 1.0));
+                        .unwrap_or((0, &1.0));
                     let t_start = sq_t.max(g_reopen_hr[gi] + 0.4); // +24m USNG hasty recon
                     let dur_h = vic_per_chunk * eff_hrs_per_vic;
                     let t_extricated = t_start + dur_h;

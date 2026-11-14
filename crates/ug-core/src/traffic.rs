@@ -246,8 +246,9 @@ impl SimulationWorld {
         let ledger = evaluate_municipal_ledger(&net_clone, &parcels_clone, &transit_policy, 20.0);
 
         let init_facilities = synthesize_default_facilities(&net_clone);
+        let n_segs = net_clone.segments.len();
         let default_max_veh = (net_clone.lanes.len() * 18).clamp(600, 45_000);
-        let default_peds = (net_clone.segments.len() * 14).clamp(180, 18_000);
+        let default_peds = (n_segs * 14).clamp(180, 18_000);
 
         let mut world = Self {
             network: net_clone,
@@ -260,10 +261,10 @@ impl SimulationWorld {
             evp_telemetry: EvpTelemetry::default(),
             emergency_facilities: init_facilities,
             emergency_coverage: EmergencyCoverageSummary::default(),
-            segment_fire_travel_s: vec![120.0; net_clone.segments.len()],
-            segment_hospital_travel_s: vec![180.0; net_clone.segments.len()],
-            evp_corridor_segments: vec![false; net_clone.segments.len()],
-            siren_seg_s: vec![None; net_clone.segments.len()],
+            segment_fire_travel_s: vec![120.0; n_segs],
+            segment_hospital_travel_s: vec![180.0; n_segs],
+            evp_corridor_segments: vec![false; n_segs],
+            siren_seg_s: vec![None; n_segs],
             idm: IdmParams::default(),
             mobil: MobilParams::default(),
             base_demand_per_lane_hr: 340.0,
@@ -299,7 +300,9 @@ impl SimulationWorld {
         world.rebuild_cyclists();
         world.rebuild_pedestrians(default_peds);
         world.refresh_urban_metrics();
-        world.telemetry_log.push_snapshot_now(&world);
+        let mut telemetry_log = std::mem::take(&mut world.telemetry_log);
+        telemetry_log.push_snapshot_now(&world);
+        world.telemetry_log = telemetry_log;
         world
     }
 
@@ -340,22 +343,24 @@ impl SimulationWorld {
             19.0,
         );
 
+        let n_segs = snap.network.segments.len();
+        let emergency_facilities = if snap.emergency_facilities.is_empty() {
+            synthesize_default_facilities(&snap.network)
+        } else {
+            snap.emergency_facilities
+        };
         let mut world = Self {
             network: snap.network,
             parcels: snap.parcels,
             transit_policy: snap.transit_policy,
             transit_gtfs: snap.transit_gtfs,
-            evp_corridor_segments: vec![false; snap.network.segments.len()],
-            siren_seg_s: vec![None; snap.network.segments.len()],
+            evp_corridor_segments: vec![false; n_segs],
+            siren_seg_s: vec![None; n_segs],
             mp_config: snap.mp_config,
             mp_telemetry: MaxPressureTelemetry::default(),
-            segment_fire_travel_s: vec![120.0; snap.network.segments.len()],
-            segment_hospital_travel_s: vec![180.0; snap.network.segments.len()],
-            emergency_facilities: if snap.emergency_facilities.is_empty() {
-                synthesize_default_facilities(&snap.network)
-            } else {
-                snap.emergency_facilities
-            },
+            segment_fire_travel_s: vec![120.0; n_segs],
+            segment_hospital_travel_s: vec![180.0; n_segs],
+            emergency_facilities,
             emergency_coverage: EmergencyCoverageSummary::default(),
             evp_config: snap.evp_config,
             evp_telemetry: EvpTelemetry::default(),
@@ -396,7 +401,9 @@ impl SimulationWorld {
             world.rebuild_pedestrians(default_peds);
         }
         world.refresh_urban_metrics();
-        world.telemetry_log.push_snapshot_now(&world);
+        let mut telemetry_log = std::mem::take(&mut world.telemetry_log);
+        telemetry_log.push_snapshot_now(&world);
+        world.telemetry_log = telemetry_log;
         world
     }
 
@@ -514,12 +521,13 @@ impl SimulationWorld {
             let walk_dir = if (idx / 2) % 2 == 0 { 1i8 } else { -1i8 };
             let v_mps = 1.15 + self.next_rand_f64() * 0.58;
             let lateral_jitter_m = (self.next_rand_f64() as f32 - 0.5) * 1.35;
+            let s_m = self.next_rand_f64() * len;
             self.pedestrians.push(PedestrianAgent {
                 segment_id: sid,
                 side_sign,
                 walk_dir,
                 lateral_jitter_m,
-                s_m: self.next_rand_f64() * len,
+                s_m,
                 v_mps,
                 cur_speed_mps: v_mps,
                 phase_seed: (idx & 0xFFFF) as u16,
@@ -573,9 +581,9 @@ impl SimulationWorld {
                     let s_m = 2.5 + (slot as f64 + 0.35) * spacing;
                     let roll = self.next_rand_f64() * 100.0;
                     let (v_class, length_m, width_m, accel_mult, v_max_mps, pax, crush) =
-                        if roll < 5.0 {
+                        if roll < 5.0 && spacing >= 14.0 {
                             (VehicleClass::TransitBus, 12.2, 2.55, 0.68, 22.0, 26u16, 60u16)
-                        } else if roll < 14.0 {
+                        } else if roll < 14.0 && spacing >= 9.6 {
                             (VehicleClass::FreightTruck, 7.8, 2.35, 0.74, 26.0, 0u16, 0u16)
                         } else {
                             (VehicleClass::Sedan, 4.4, 1.9, 1.0, 36.0, 0u16, 0u16)
@@ -594,6 +602,7 @@ impl SimulationWorld {
                         (seg_speed * (0.55 + 0.35 * self.next_rand_f64())).min(spacing * 0.75);
                     let id = self.next_veh_id;
                     self.next_veh_id += 1;
+                    let lc_cooldown_s = self.next_rand_f64() * 2.0;
                     self.vehicles.push(Vehicle {
                         id,
                         v_class,
@@ -606,7 +615,7 @@ impl SimulationWorld {
                         v: v_init,
                         acc: 0.0,
                         lat_visual_offset_m: 0.0,
-                        lc_cooldown_s: self.next_rand_f64() * 2.0,
+                        lc_cooldown_s,
                         dest_seg_id,
                         planned_conn_id: None,
                         turn_intent: TurnType::Through,
@@ -643,6 +652,17 @@ impl SimulationWorld {
                     continue;
                 }
                 if let Some(&curb_lid) = self.network.segments[sid].lane_ids.last() {
+                    let bus_s = len_m + 4.0;
+                    let lane_len = self.network.lanes[curb_lid].length;
+                    let has_room = lane_len > bus_s + 2.0
+                        && self.vehicles.iter().all(|v| {
+                            v.carrier != CarrierRef::Lane(curb_lid)
+                                || (bus_s + 1.5 <= v.s_m - v.length_m)
+                                || (v.s_m + 1.5 <= bus_s - len_m)
+                        });
+                    if !has_room {
+                        continue;
+                    }
                     let next_stop_order = self.transit_gtfs.routes[r_idx]
                         .route_stops
                         .iter()
@@ -659,7 +679,7 @@ impl SimulationWorld {
                         accel_mult: 0.68,
                         v_max_mps: 21.0,
                         carrier: CarrierRef::Lane(curb_lid),
-                        s_m: 4.0,
+                        s_m: bus_s,
                         v: 7.5,
                         acc: 0.0,
                         lat_visual_offset_m: 0.0,
@@ -1365,7 +1385,7 @@ impl SimulationWorld {
                                         let need_stop =
                                             stop.waiting_pax >= 1.0 || veh.onboard_pax > 0;
                                         if need_stop && stop.s_m >= veh.s_m - 0.8 {
-                                            let g_stop = (stop.s_m - veh.s_m).max(0.12);
+                                            let g_stop = (stop.s_m + idm.min_jam_gap_m - 0.5 - veh.s_m).max(0.12);
                                             if g_stop < gap {
                                                 gap = g_stop;
                                                 dv = veh.v;
@@ -1416,6 +1436,12 @@ impl SimulationWorld {
         // 8. Semi-implicit integration, GTFS curbside stop boarding/alighting dwell, & carrier transitions
         let mut retained = Vec::with_capacity(self.vehicles.len());
         let old_vehicles = std::mem::take(&mut self.vehicles);
+        let mut lane_entry_rear = vec![f64::INFINITY; self.network.lanes.len()];
+        for v in &old_vehicles {
+            if let CarrierRef::Lane(lid) = v.carrier {
+                lane_entry_rear[lid] = lane_entry_rear[lid].min(v.s_m - v.length_m);
+            }
+        }
         let mut active_bus_loads: Vec<(usize, usize, f64, u16, u16)> = Vec::new();
 
         for mut veh in old_vehicles {
@@ -1540,12 +1566,22 @@ impl SimulationWorld {
                     let conn_len = self.network.connectors[cid].length;
                     let dst_lid = self.network.connectors[cid].to_lane_id;
                     if veh.s_m >= conn_len {
+                        let max_safe_s = lane_entry_rear[dst_lid] - self.idm.min_jam_gap_m;
+                        if max_safe_s < 0.05 {
+                            veh.s_m = (conn_len - 0.05).max(0.0);
+                            veh.v = 0.0;
+                            veh.acc = 0.0;
+                            retained.push(veh);
+                            continue;
+                        }
                         let over = veh.s_m - conn_len;
                         let dst_len = self.network.lanes[dst_lid].length;
                         let dst_seg = self.network.lanes[dst_lid].segment_id;
                         veh.carrier = CarrierRef::Lane(dst_lid);
-                        veh.s_m = over.min(dst_len - 0.5);
+                        veh.s_m = over.min(dst_len - 0.5).min(max_safe_s);
                         veh.planned_conn_id = None;
+                        lane_entry_rear[dst_lid] =
+                            lane_entry_rear[dst_lid].min(veh.s_m - veh.length_m);
 
                         if let Some(r_idx) = veh.gtfs_route_idx {
                             if let Some(route) = self.transit_gtfs.routes.get(r_idx as usize) {

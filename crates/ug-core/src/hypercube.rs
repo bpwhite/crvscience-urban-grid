@@ -471,7 +471,7 @@ pub fn solve_larson_hypercube_with_offsets(
         let max_iters = cfg.max_iterations.clamp(25, 2000);
         let tol = cfg.tolerance.clamp(1e-13, 1e-6);
 
-        for _outer in 0..outer_passes {
+        for outer_idx in 0..outer_passes {
             let mu_total: f64 = mu_vec.iter().sum::<f64>().max(1e-9);
             let rho_bar = (lambda_total / mu_total).clamp(0.0, 0.985);
 
@@ -638,7 +638,7 @@ pub fn solve_larson_hypercube_with_offsets(
                 999.0
             };
 
-            if cfg.calibrate_travel_service_rate {
+            if cfg.calibrate_travel_service_rate && outer_idx + 1 < outer_passes {
                 let base_scene_s = cfg.base_service_duration_mins.clamp(5.0, 240.0) * 60.0;
                 let max_erg = lambda_total / ((n_units as f64) * 0.97);
                 for u in 0..n_units {
@@ -1241,7 +1241,7 @@ pub fn solve_larson_hypercube_with_pref(
         let max_iters = cfg.max_iterations.clamp(25, 2000);
         let tol = cfg.tolerance.clamp(1e-13, 1e-6);
 
-        for _outer in 0..outer_passes {
+        for outer_idx in 0..outer_passes {
             let mu_total: f64 = mu_vec.iter().sum::<f64>().max(1e-9);
             let rho_bar = (lambda_total / mu_total).clamp(0.0, 0.985);
             let mut diag_out = vec![0.0f64; num_states];
@@ -1393,7 +1393,7 @@ pub fn solve_larson_hypercube_with_pref(
                 999.0
             };
 
-            if cfg.calibrate_travel_service_rate {
+            if cfg.calibrate_travel_service_rate && outer_idx + 1 < outer_passes {
                 let base_scene_s = cfg.base_service_duration_mins.clamp(5.0, 240.0) * 60.0;
                 let max_erg = lambda_total / ((n_units as f64) * 0.97);
                 for u in 0..n_units {
@@ -1629,18 +1629,16 @@ impl RedistrictingReport {
     pub fn to_unit_csv_string(&self) -> String {
         let mut out = String::with_capacity(2560);
         out.push_str(REDISTRICT_UNIT_CSV_HEADER);
-        out.push('
-');
+        out.push('\n');
         for u in &self.unit_summaries {
             let esc = if u.label.contains(',') || u.label.contains('"') {
-                format!(""{}"", u.label.replace('"', """"))
+                format!("\"{}\"", u.label.replace('"', "\"\""))
             } else {
                 u.label.clone()
             };
             let delta_pts = (u.optimized_busy_rho - u.voronoi_busy_rho) * 100.0;
             out.push_str(&format!(
-                "{},{},{},{:+.3},{},{},{:.2},{:.2},{:.6},{:.6},{:+.3},{:.2}
-",
+                "{},{},{},{:+.3},{},{},{:.2},{:.2},{:.6},{:.6},{:+.3},{:.2}\n",
                 u.unit_idx,
                 esc,
                 u.station_segment_id,
@@ -1661,12 +1659,10 @@ impl RedistrictingReport {
     pub fn to_pareto_csv_string(&self) -> String {
         let mut out = String::with_capacity(1536);
         out.push_str(REDISTRICT_PARETO_CSV_HEADER);
-        out.push('
-');
+        out.push('\n');
         for pt in &self.pareto_frontier {
             out.push_str(&format!(
-                "{:.2},{:.3},{:.3},{:.2},{:.6},{:.6},{:.6},{:.6},{}
-",
+                "{:.2},{:.3},{:.3},{:.2},{:.6},{:.6},{:.6},{:.6},{}\n",
                 pt.equity_weight,
                 pt.mean_dispatch_travel_s,
                 pt.mean_total_response_s,

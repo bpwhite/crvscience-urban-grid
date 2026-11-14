@@ -733,7 +733,7 @@ pub fn run_commodity_resupply_monte_carlo(
     }
 
     // Bridges & buried water pipe corridors
-    let bridges = enumerate_seismic_bridge_inventory(net, seis);
+    let bridges = enumerate_seismic_bridge_inventory(net, facilities, seis);
     let n_br = bridges.len();
     let west_x = b.min_x;
 
@@ -845,8 +845,8 @@ pub fn run_commodity_resupply_monte_carlo(
                 seed_base.wrapping_add((trial_idx as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)),
             );
             let eta_inter = rng.next_standard_normal();
-            let tau_b = seis.inter_event_tau;
-            let phi_w = seis.intra_event_phi;
+            let tau_b = seis.inter_event_sigma_ln;
+            let phi_w = seis.intra_event_sigma_ln;
 
             // 1. Sample initial mainshock bridge damage states
             let mut br_ds = vec![SeismicDamageState::None; n_br];
@@ -901,9 +901,10 @@ pub fn run_commodity_resupply_monte_carlo(
                 };
                 let rr = ala_hazus_pipe_repair_rate_per_km(
                     pgv,
+                    seis.pipe_fragility_law,
                     mat,
                     if is_art { 300.0 } else { 200.0 },
-                    seis.pipe_fragility_law,
+                    false,
                 );
                 corr_repairs[cid] =
                     sample_poisson_icdf(rr * (len_m / 1000.0), rng.next_f64_open01());

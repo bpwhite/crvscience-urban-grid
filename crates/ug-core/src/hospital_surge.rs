@@ -283,7 +283,7 @@ pub fn hospital_fault_tree_functionality(
 
     // Effective demand IM blending spectral drift (`Sa 1.0s`) and nonstructural acceleration (`PGA`)
     let eff_im_g = (0.55 * site_sa10_g + 0.45 * site_pga_g).max(0.005);
-    let (medians, beta) = if seismically_retrofitted {
+    let (medians, beta): ([f64; 4], f64) = if seismically_retrofitted {
         // OSHPD SPC-5 / NPC-5 base-isolated & braced medical gas/sprinkler hospital
         ([0.82, 1.24, 1.72, 2.38], 0.55)
     } else {
@@ -315,7 +315,7 @@ pub fn hospital_fault_tree_functionality(
     };
 
     // Lifeline fault-tree product (power for CT/OR/ventilators; >=20 psi water for sterilization/chillers/burn care)
-    let power_factor = if grid_power_ok {
+    let power_factor: f64 = if grid_power_ok {
         1.0
     } else if onsite_backup_lifelines {
         0.96
@@ -323,7 +323,7 @@ pub fn hospital_fault_tree_functionality(
         0.55
     };
     let water_ok = municipal_water_psi >= MIN_FIRE_FLOW_RESIDUAL_PSI;
-    let water_factor = if water_ok {
+    let water_factor: f64 = if water_ok {
         1.0
     } else if onsite_backup_lifelines {
         0.95
@@ -904,7 +904,7 @@ pub fn run_hospital_surge_monte_carlo(
     }
 
     // 4. Bridges, buried water corridors, and Jayaram-Baker (2009) spatial correlation Cholesky
-    let bridges = enumerate_seismic_bridge_inventory(net, &cfg.ffe.seismic);
+    let bridges = enumerate_seismic_bridge_inventory(net, facilities, &cfg.ffe.seismic);
     let n_br = bridges.len();
 
     let mut u_corridors: Vec<(usize, f64, Vec2, bool)> = Vec::new();
@@ -1115,8 +1115,8 @@ pub fn run_hospital_surge_monte_carlo(
                 eps_intra[i] = s;
             }
 
-            let tau_b = cfg.ffe.seismic.inter_event_tau;
-            let phi_w = cfg.ffe.seismic.intra_event_phi;
+            let tau_b = cfg.ffe.seismic.inter_event_sigma_ln;
+            let phi_w = cfg.ffe.seismic.intra_event_sigma_ln;
 
             // A. Realize bridge closures
             let mut seg_closed = vec![false; n_segs];
@@ -1265,9 +1265,10 @@ pub fn run_hospital_surge_monte_carlo(
                 };
                 let rr = ala_hazus_pipe_repair_rate_per_km(
                     pgv,
+                    cfg.ffe.seismic.pipe_fragility_law,
                     mat,
                     if is_art { 300.0 } else { 200.0 },
-                    cfg.ffe.seismic.pipe_fragility_law,
+                    false,
                 );
                 let n_rep = sample_poisson_icdf(rr * (len_m / 1000.0), rng.next_f64_open01());
                 if n_rep > 0 {

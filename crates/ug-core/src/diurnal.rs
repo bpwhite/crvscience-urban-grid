@@ -918,7 +918,7 @@ pub fn solve_diurnal_peak_offpeak_dispatch_tables(
 
     DiurnalRedistrictingReport {
         num_units: n_units,
-        num_parcels,
+        num_parcels: n_parcels,
         window_preset: cfg.window_preset,
         peak_table,
         offpeak_table,

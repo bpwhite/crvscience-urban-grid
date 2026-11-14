@@ -263,8 +263,8 @@ pub fn compute_evac_coach_capacity_and_dwell_min(
     };
     let pax = boarding_pax.clamp(1.0, evac_cap as f64);
     let (clearance_s, board_s_per_pax, alight_s_per_pax) = match fare_mode {
-        BoardingFareMode::CashBoxFrontDoor => (4.5, 4.15 * 1.30, 2.20),
-        BoardingFareMode::SmartCardFrontDoor => (3.8, 2.75 * 1.25, 1.95),
+        BoardingFareMode::FrontDoorCash => (4.5, 4.15 * 1.30, 2.20),
+        BoardingFareMode::SmartcardTap => (3.8, 2.75 * 1.25, 1.95),
         BoardingFareMode::AllDoorFareFreeBrt => (2.8, 1.75 * 1.22, 1.35),
     };
     let total_dwell_s = 2.0 * clearance_s + pax * (board_s_per_pax + alight_s_per_pax);
@@ -447,7 +447,7 @@ fn select_gtfs_pickup_depots(
                 let r_cnt = gtfs
                     .routes
                     .iter()
-                    .filter(|r| r.stop_ids.contains(&st.id))
+                    .filter(|r| r.route_stops.iter().any(|&(sid, _)| sid == st.id))
                     .count()
                     .max(1);
                 pool.push((
@@ -471,7 +471,7 @@ fn select_gtfs_pickup_depots(
                 let r_cnt = synth
                     .routes
                     .iter()
-                    .filter(|r| r.stop_ids.contains(&st.id))
+                    .filter(|r| r.route_stops.iter().any(|&(sid, _)| sid == st.id))
                     .count()
                     .max(1);
                 pool.push((
@@ -509,7 +509,7 @@ fn select_gtfs_pickup_depots(
         .iter()
         .map(|p| {
             let (carless_sh, _) = zone_carless_and_ada_shares(p.zone);
-            let hh_pop = ((p.trip_weight * 1.45).max(3.5)) * carless_sh;
+            let hh_pop = ((p.residents() * 0.42 + p.jobs() * 0.55).max(3.5)) * carless_sh;
             (p.center, hh_pop)
         })
         .collect();
@@ -625,16 +625,18 @@ fn build_seg_adjacency(net: &RoadNetwork) -> Vec<Vec<(usize, f64)>> {
     let n = net.segments.len();
     let mut adj = vec![Vec::new(); n];
     for c in &net.connectors {
-        if c.from_lane >= net.lanes.len() || c.to_lane >= net.lanes.len() {
+        if c.from_lane_id >= net.lanes.len() || c.to_lane_id >= net.lanes.len() {
             continue;
         }
-        let u = net.lanes[c.from_lane].segment_id;
-        let v = net.lanes[c.to_lane].segment_id;
+        let u = net.lanes[c.from_lane_id].segment_id;
+        let v = net.lanes[c.to_lane_id].segment_id;
         if u < n && v < n && u != v {
             let turn_pen_s = match net.junctions[c.junction_id].control_mode {
                 ControlMode::Roundabout => 2.5,
-                ControlMode::MaxPressure => 4.2,
-                ControlMode::FixedSignal => match c.turn_type {
+                ControlMode::MaxPressureAdaptive => 4.2,
+                ControlMode::Signal2Phase
+                | ControlMode::Signal4PhaseProtectedLeft
+                | ControlMode::PermissiveYield => match c.turn_type {
                     TurnType::Through => 4.5,
                     TurnType::Right => 5.5,
                     TurnType::Left => 8.0,
@@ -709,7 +711,7 @@ fn plan_bus_ems_contraflow_topology(
     for fac in facilities {
         if fac.segment_id < n {
             ems_spine[fac.segment_id] = true;
-            let j_to = net.segments[fac.segment_id].to_junction;
+            let j_to = net.segments[fac.segment_id].to_junc;
             for &out_s in &net.junctions[j_to].out_segs {
                 if out_s < n {
                     ems_spine[out_s] = true;
@@ -745,11 +747,11 @@ fn plan_bus_ems_contraflow_topology(
                 if seg.has_bus_lane || seg.lane_count >= 2 || ems_spine[seg.id] {
                     bus_ems_lane[seg.id] = true;
                 }
-                // Check opposing segment `(to_junction -> from_junction)`
+                // Check opposing segment `(to_junc -> from_junc)`
                 if let Some(opp) = net.segments.iter().find(|o| {
                     !o.closed
-                        && o.from_junction == seg.to_junction
-                        && o.to_junction == seg.from_junction
+                        && o.from_junc == seg.to_junc
+                        && o.to_junc == seg.from_junc
                 }) {
                     if opp.lane_count >= 2 && !donor_used.contains(&opp.id) && seg.speed_mph >= 24.0
                     {
@@ -813,6 +815,11 @@ pub fn run_transit_bus_evacuation_monte_carlo(
         y: 0.5 * (net.bounds.min_y + net.bounds.max_y),
     };
 
+    let base_sa10_g = crate::seismic_mc::median_sa10_gmpe_g(
+        ffe_cfg.seismic.moment_magnitude_mw,
+        ffe_cfg.seismic.rupture_standoff_km,
+        ffe_cfg.seismic.vs30_m_per_s,
+    );
     let mut sh_order: Vec<usize> = (0..n_sh).collect();
     sh_order.sort_by(|&a, &b| {
         let sa = &cand_shelters[a];
@@ -823,17 +830,30 @@ pub fn run_transit_bus_evacuation_monte_carlo(
                 y: s.world_pos.y - city_centroid.y,
             };
             let downwind_proj = rel.x * wind_vec.x + rel.y * wind_vec.y;
-            let mut sc = s.nominal_cot_capacity as f64;
+            let base_cap = s.nominal_cot_capacity as f64;
             if cfg.dispatch_strategy == TransitDispatchStrategy::FireUrgencyCleanAirTbep {
-                sc -= 0.85 * downwind_proj;
-                if s.seismically_retrofitted {
-                    sc += 260.0;
-                }
-                if s.archetype != ShelterFacilityArchetype::OpenParkTentPavilion {
-                    sc += 220.0;
-                }
+                let (_, _, med_g, _) = s.archetype.physical_specs();
+                let eff_med_g = if s.seismically_retrofitted {
+                    med_g * 1.48
+                } else {
+                    med_g
+                };
+                let p_green =
+                    (1.0 - normal_cdf_phi((base_sa10_g / eff_med_g.max(0.15)).ln() / 0.55))
+                        .clamp(0.15, 1.0);
+                let tent_clean_mult = if s.archetype == ShelterFacilityArchetype::OpenParkTentPavilion
+                    && cfg.shelters.filtration_standard
+                        != crate::AirFiltrationStandard::CleanerAirMerv13PlusPortableHepa
+                {
+                    0.55
+                } else {
+                    1.0
+                };
+                let upwind_mult = (1.0 - 0.00008 * downwind_proj).clamp(0.85, 1.18);
+                base_cap * p_green * tent_clean_mult * upwind_mult
+            } else {
+                base_cap
             }
-            sc
         };
         score_fn(sb)
             .partial_cmp(&score_fn(sa))
@@ -860,8 +880,11 @@ pub fn run_transit_bus_evacuation_monte_carlo(
         r
     };
 
-    let bridges =
-        enumerate_seismic_bridge_inventory(net, &cfg.shelters.evac.medevac.surge.ffe.seismic);
+    let bridges = enumerate_seismic_bridge_inventory(
+        net,
+        facilities,
+        &cfg.shelters.evac.medevac.surge.ffe.seismic,
+    );
 
     // Assign each parcel to its nearest walkable Neighborhood Pickup Depot (`PP_k`) and compute carless + ADA headcount
     let mult = cfg.carless_demand_multiplier.clamp(0.25, 3.0);
@@ -876,7 +899,9 @@ pub fn run_transit_bus_evacuation_monte_carlo(
     for (pi, p) in parcels.iter().enumerate() {
         let (carless_sh, ada_sh) = zone_carless_and_ada_shares(p.zone);
         // Scale parcel resident evacuation population realistically (~14–48 residents per urban block parcel)
-        let block_pop = (12.0 + p.trip_weight * 2.2 + (p.area_m2 / 550.0).min(24.0)).clamp(8.0, 68.0);
+        let area_m2 = p.area_ha * 10_000.0;
+        let est_pop = p.residents() * 0.42 + p.jobs() * 0.55;
+        let block_pop = (12.0 + est_pop * 0.35 + (area_m2 / 550.0).min(24.0)).clamp(8.0, 68.0);
         let carless = (block_pop * carless_sh * mult).max(0.2);
         let ada = (block_pop * ada_sh * mult).max(0.08);
         let auto_pop = (block_pop - carless - ada).max(1.0);
@@ -930,12 +955,11 @@ pub fn run_transit_bus_evacuation_monte_carlo(
     let chol = cholesky_lower(&corr, n_sites);
 
     let seis_cfg = &cfg.shelters.evac.medevac.surge.ffe.seismic;
-    let base_sa10_g = {
-        let m_term = (0.82 * (seis_cfg.moment_magnitude_mw - 6.0)).exp();
-        let r_eff = (seis_cfg.rupture_standoff_km.hypot(7.5)).max(3.5);
-        let site_amp = (360.0 / seis_cfg.vs30_m_per_s.clamp(140.0, 900.0)).powf(0.45);
-        (0.26 * m_term * (12.0 / r_eff).powf(0.82) * site_amp).clamp(0.05, 1.85)
-    };
+    let base_sa10_g = crate::seismic_mc::median_sa10_gmpe_g(
+        seis_cfg.moment_magnitude_mw,
+        seis_cfg.rupture_standoff_km,
+        seis_cfg.vs30_m_per_s,
+    );
 
     let (coach_cap, _) =
         compute_evac_coach_capacity_and_dwell_min(cfg.coach_spec, cfg.fare_mode, 50.0);
@@ -1001,12 +1025,15 @@ pub fn run_transit_bus_evacuation_monte_carlo(
 
             let sa10_city =
                 (base_sa10_g * (0.34 * z_inter + 0.24 * z_corr[0]).exp()).clamp(0.03, 2.6);
-            let pga_city = (sa10_city * 1.12).clamp(0.04, 2.4);
+            let pga_city =
+                crate::seismic_mc::median_pga_g_from_sa10(sa10_city, seis_cfg.vs30_m_per_s);
             let pgv_cm_s = median_pgv_cm_s_from_sa10(sa10_city, seis_cfg.vs30_m_per_s);
             let pipe_rr = ala_hazus_pipe_repair_rate_per_km(
                 pgv_cm_s,
+                seis_cfg.pipe_fragility_law,
                 seis_cfg.baseline_water_pipe_material,
-                1.0,
+                250.0,
+                false,
             );
             let water_main_intact = rng.next_f64_open01() > (1.0 - (-pipe_rr * 1.8).exp());
             let grid_power_intact = rng.next_f64_open01() > normal_cdf_phi((pga_city / 0.36).ln() / 0.52);
@@ -1014,20 +1041,26 @@ pub fn run_transit_bus_evacuation_monte_carlo(
             // Bridge seismic closures
             let mut seg_bridge_closed = vec![false; n_seg];
             for br in &bridges {
-                let med_ext = if br.seismically_retrofitted {
-                    br.archetype.median_sa10_extensive_g() * 1.42
-                } else {
-                    br.archetype.median_sa10_extensive_g()
-                };
-                let p_close = normal_cdf_phi((sa10_city / med_ext.max(0.12)).ln() / 0.60);
-                if rng.next_f64_open01() < p_close && br.segment_id < n_seg {
-                    seg_bridge_closed[br.segment_id] = true;
+                if rng.next_f64_open01() < br.effective_archetype.exceedance_probs(sa10_city)[2] {
+                    for &sid in &br.segment_ids {
+                        if sid < n_seg {
+                            seg_bridge_closed[sid] = true;
+                        }
+                    }
                 }
             }
 
             // Sample Scawthorn/Hazus FFE ignitions & Hamada wind-driven conflagration radii (`t = 60 min` mid-window)
-            let total_sqft: f64 = parcels.iter().map(|p| p.area_m2 * SQFT_PER_M2 * 0.55).sum();
-            let ign_rate = scawthorn_hazus_ignition_rate_per_mmsqft(pga_city, 0.52);
+            let total_sqft: f64 = parcels
+                .iter()
+                .map(|p| p.area_ha * 10_000.0 * SQFT_PER_M2 * 0.55)
+                .sum();
+            let ign_rate = scawthorn_hazus_ignition_rate_per_mmsqft(
+                pga_city,
+                ZoneCode::MU4,
+                ffe_cfg.ignition_model,
+                ffe_cfg.seismic_gas_shutoff_pct,
+            );
             let n_ign = sample_poisson_icdf(
                 (ign_rate * (total_sqft / 1_000_000.0)).max(0.18),
                 rng.next_f64_open01(),
@@ -1044,10 +1077,9 @@ pub fn run_transit_bus_evacuation_monte_carlo(
             } else {
                 1.18
             };
-            let (v_down_m_min, v_up_m_min, v_flank_m_min) =
-                hamada_hazus_spread_rates(ffe_cfg.wind_speed_mps, 0.45, 0.28);
-            let r_fire_m = (v_down_m_min * 42.0 * supp_factor
-                + 0.5 * (v_up_m_min + v_flank_m_min) * 18.0)
+            let rates = hamada_hazus_spread_rates(ZoneCode::R3, ffe_cfg.wind_speed_mps);
+            let r_fire_m = (rates.v_down_m_min * 42.0 * supp_factor
+                + 0.5 * (rates.v_up_m_min + rates.v_cross_m_min) * 18.0)
                 .clamp(22.0, 260.0);
 
             let mut fire_centers = Vec::with_capacity(n_ign);
@@ -1059,7 +1091,7 @@ pub fn run_transit_bus_evacuation_monte_carlo(
             }
 
             // Evaluate thermal segment closures & outdoor smoke PM2.5 / speed factor
-            let mut seg_closed = seg_bridge_closed;
+            let mut seg_closed = seg_bridge_closed.clone();
             let mut seg_ffe_closed = vec![0.0; n_seg];
             let mut seg_smoke_v_fac = vec![1.0; n_seg];
             for seg in &net.segments {
@@ -1147,6 +1179,7 @@ pub fn run_transit_bus_evacuation_monte_carlo(
             let mut open_clean_cnt = 0usize;
 
             for (si, sh) in cand_shelters.iter().enumerate() {
+                let u_sh_tag = rng.next_f64_open01();
                 if !sh_selected[si] {
                     continue;
                 }
@@ -1158,8 +1191,8 @@ pub fn run_transit_bus_evacuation_monte_carlo(
                 };
                 let z_sh = z_corr[(n_pp + si).min(n_sites - 1)];
                 let sa_sh = (sa10_city * (0.20 * z_sh).exp()).clamp(0.03, 2.8);
-                let green_tag = rng.next_f64_open01()
-                    >= normal_cdf_phi((sa_sh / eff_med_g.max(0.15)).ln() / 0.55);
+                let green_tag =
+                    u_sh_tag >= normal_cdf_phi((sa_sh / eff_med_g.max(0.15)).ln() / 0.55);
 
                 let has_power =
                     grid_power_intact || cfg.shelters.shelter_backup_power_water_sanitation;
@@ -1289,14 +1322,14 @@ pub fn run_transit_bus_evacuation_monte_carlo(
                 else {
                     break;
                 };
-                if t_now >= win_min - 2.0 || pp_rem.iter().all(|&r| r <= 0.25) {
+                if t_now >= win_min - 2.0 || pp_rem.iter().all(|&r| r <= 1e-4) {
                     break;
                 }
 
                 // Choose Pickup Depot `k` & Destination Shelter `si` according to `cfg.dispatch_strategy`
                 let mut best_choice: Option<(usize, usize, f64, f64, f64)> = None;
                 for (k, d) in pickup_depots.iter().enumerate() {
-                    if pp_rem[k] <= 0.25 {
+                    if pp_rem[k] <= 1e-4 {
                         continue;
                     }
                     // Backhaul / deadhead from previous shelter (`dist_from_sh`) or transit garage to depot `k`
@@ -1442,14 +1475,14 @@ pub fn run_transit_bus_evacuation_monte_carlo(
                 else {
                     break;
                 };
-                if t_now >= win_min - 3.0 || ada_rem.iter().all(|&r| r <= 0.08) {
+                if t_now >= win_min - 3.0 || ada_rem.iter().all(|&r| r <= 1e-5) {
                     break;
                 }
 
                 // Pick highest-priority unserved ADA parcel cluster + clean-air shelter
                 let mut best_ada: Option<(usize, usize, f64, f64, f64)> = None;
                 for pi in 0..n_parcels {
-                    if ada_rem[pi] <= 0.08 {
+                    if ada_rem[pi] <= 1e-5 {
                         continue;
                     }
                     let p_pos = parcels[pi].center;
@@ -1519,13 +1552,13 @@ pub fn run_transit_bus_evacuation_monte_carlo(
                     parcel_ada_wait_sum[pi] += boarded * wait_t;
 
                     let rem_van_space = (ada_van_cap as f64 - tot_boarded).min(sh_rem_cap[si] - boarded);
-                    if rem_van_space > 0.25 {
+                    if rem_van_space > 1e-4 {
                         let mut left = rem_van_space;
                         for pj in 0..n_parcels {
-                            if left <= 0.10 {
+                            if left <= 1e-5 {
                                 break;
                             }
-                            if ada_rem[pj] > 0.08 && parcels[pj].center.dist(parcels[pi].center) <= 220.0 {
+                            if ada_rem[pj] > 1e-5 && parcels[pj].center.dist(parcels[pi].center) <= 220.0 {
                                 let take = ada_rem[pj].min(left);
                                 ada_rem[pj] -= take;
                                 left -= take;
@@ -1550,22 +1583,70 @@ pub fn run_transit_bus_evacuation_monte_carlo(
                 }
             }
 
-            // Verify inbound EMS hospital access preservation (% of fire/EMS facilities with finite <18 min inbound path to hospital/depots)
-            let hosp_segs: Vec<usize> = facilities
+            // Verify inbound EMS hospital access preservation (% of pickup depots & emergency hubs reachable <18 min,
+            // allowing bidirectional EMS contraflow travel on designated `bus_ems_lane` corridors; FFE active fire
+            // remains a hard barrier, while seismic overpass damage imposes a mode-dependent surface bypass penalty).
+            let mut ems_adj = adj.clone();
+            for u in 0..n_seg {
+                for &(v, pen_s) in &adj[u] {
+                    if (bus_ems_lane[u] || bus_ems_lane[v])
+                        && ems_adj[v].iter().all(|&(nb, _)| nb != u)
+                    {
+                        ems_adj[v].push((u, pen_s));
+                    }
+                }
+            }
+            let bypass_pen_s = match cfg.lane_mode {
+                BusContraflowLaneMode::DedicatedBusPlusEmsContraflow => 150.0,
+                BusContraflowLaneMode::CurbsideBusOnlyNoContraflow => 420.0,
+                BusContraflowLaneMode::MixedAutoQueueNoPriority => 720.0,
+            };
+            let mut seg_ems_bypass_trav_s = seg_ems_in_trav_s.clone();
+            let mut seg_ems_hard_blocked = vec![false; n_seg];
+            for sid in 0..n_seg {
+                if net.segments[sid].closed || seg_ffe_closed[sid] > 0.5 {
+                    seg_ems_hard_blocked[sid] = true;
+                } else if seg_bridge_closed[sid] {
+                    seg_ems_bypass_trav_s[sid] += bypass_pen_s;
+                }
+            }
+            let mut ems_origins: Vec<usize> = facilities
                 .iter()
-                .filter(|f| f.kind == EmergencyFacilityKind::Hospital)
+                .filter(|f| {
+                    matches!(
+                        f.kind,
+                        EmergencyFacilityKind::Hospital | EmergencyFacilityKind::FireStation
+                    )
+                })
                 .map(|f| f.segment_id)
                 .collect();
-            let ems_check_origin = hosp_segs
-                .first()
-                .copied()
-                .or_else(|| sh_segs.first().copied())
-                .unwrap_or(0);
-            let ems_dist =
-                dijkstra_from_seg(ems_check_origin, &seg_ems_in_trav_s, &seg_closed, &adj);
+            if ems_origins.is_empty() {
+                if let Some(&s0) = sh_segs.first() {
+                    ems_origins.push(s0);
+                } else {
+                    ems_origins.push(0);
+                }
+            }
+            let mut best_ems_dist = vec![f64::INFINITY; n_seg];
+            for &orig in &ems_origins {
+                let d_map = dijkstra_from_seg(
+                    orig,
+                    &seg_ems_bypass_trav_s,
+                    &seg_ems_hard_blocked,
+                    &ems_adj,
+                );
+                for (si, &dv) in d_map.iter().enumerate() {
+                    if dv < best_ems_dist[si] {
+                        best_ems_dist[si] = dv;
+                    }
+                }
+            }
             let reachable_pp = pickup_depots
                 .iter()
-                .filter(|d| ems_dist.get(d.segment_id).copied().unwrap_or(f64::INFINITY) < 18.0 * 60.0)
+                .filter(|d| {
+                    best_ems_dist.get(d.segment_id).copied().unwrap_or(f64::INFINITY)
+                        < 18.0 * 60.0
+                })
                 .count();
             let ems_ok_pct = if n_pp > 0 {
                 100.0 * (reachable_pp as f64) / (n_pp as f64)

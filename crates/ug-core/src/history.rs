@@ -2163,7 +2163,7 @@ impl SimulationWorld {
             before,
             after,
         );
-        self.utility_report.water.nodes_meeting_20psi_pct
+        self.utility_report.water.nodes_meeting_20psi_fire_pct
     }
 }
 

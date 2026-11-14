@@ -992,7 +992,7 @@ pub fn run_fema_gsb_drc_tdms_monte_carlo(
         vegetative_debris_tons: veg_tons,
         cd_structural_debris_tons: cd_tons,
         hhw_hazardous_swept_tons: hhw_tons,
-        white_goods_freon_units,
+        white_goods_freon_units: white_goods_units,
         curbside_haul_completed_14d_pct,
         tdms_landfill_volume_saved_yd3,
         hhw_contamination_prevented_pct,

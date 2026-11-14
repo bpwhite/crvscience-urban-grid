@@ -409,16 +409,18 @@ fn build_seg_adjacency(net: &RoadNetwork) -> Vec<Vec<(usize, f64)>> {
     let n = net.segments.len();
     let mut adj = vec![Vec::new(); n];
     for c in &net.connectors {
-        if c.from_lane >= net.lanes.len() || c.to_lane >= net.lanes.len() {
+        if c.from_lane_id >= net.lanes.len() || c.to_lane_id >= net.lanes.len() {
             continue;
         }
-        let u = net.lanes[c.from_lane].segment_id;
-        let v = net.lanes[c.to_lane].segment_id;
+        let u = net.lanes[c.from_lane_id].segment_id;
+        let v = net.lanes[c.to_lane_id].segment_id;
         if u < n && v < n && u != v {
             let turn_s = match net.junctions[c.junction_id].control_mode {
                 ControlMode::Roundabout => 2.5,
-                ControlMode::MaxPressure => 4.2,
-                ControlMode::FixedSignal => match c.turn_type {
+                ControlMode::MaxPressureAdaptive => 4.2,
+                ControlMode::Signal2Phase
+                | ControlMode::Signal4PhaseProtectedLeft
+                | ControlMode::PermissiveYield => match c.turn_type {
                     TurnType::Through => 4.5,
                     TurnType::Right => 5.5,
                     TurnType::Left => 8.0,
@@ -598,8 +600,10 @@ pub fn run_fema_comms_monte_carlo(
             ZoneCode::MU4 => 1.15,
             _ => 1.0,
         };
+        let area_m2 = p.area_ha * 10_000.0;
+        let est_pop = p.residents() * 0.42 + p.jobs() * 0.55;
         parcel_pop[pi] =
-            ((12.0 + p.trip_weight * 2.2 + (p.area_m2 / 550.0).min(24.0)) * zone_mult).clamp(8.0, 75.0);
+            ((12.0 + est_pop * 0.35 + (area_m2 / 550.0).min(24.0)) * zone_mult).clamp(8.0, 75.0);
 
         let mut d_wea: Vec<(usize, f64)> = wea_nodes
             .iter()
@@ -625,7 +629,7 @@ pub fn run_fema_comms_monte_carlo(
     }
 
     let adj = build_seg_adjacency(net);
-    let bridges = enumerate_seismic_bridge_inventory(net, seis_cfg);
+    let bridges = enumerate_seismic_bridge_inventory(net, facilities, seis_cfg);
 
     let n_fixed_sites = 3 + wea_nodes.len(); // EOC + PEP + NWR + 6 WEA
     let mut site_locs = vec![eoc_pos, pep_pos, nwr_pos];
@@ -641,12 +645,11 @@ pub fn run_fema_comms_monte_carlo(
     }
     let chol = cholesky_lower(&corr, n_fixed_sites);
 
-    let base_sa10_g = {
-        let m_term = (0.82 * (seis_cfg.moment_magnitude_mw - 6.0)).exp();
-        let r_eff = (seis_cfg.rupture_standoff_km.hypot(7.5)).max(3.5);
-        let site_amp = (360.0 / seis_cfg.vs30_m_per_s.clamp(140.0, 900.0)).powf(0.45);
-        (0.26 * m_term * (12.0 / r_eff).powf(0.82) * site_amp).clamp(0.05, 1.85)
-    };
+    let base_sa10_g = crate::seismic_mc::median_sa10_gmpe_g(
+        seis_cfg.moment_magnitude_mw,
+        seis_cfg.rupture_standoff_km,
+        seis_cfg.vs30_m_per_s,
+    );
 
     let (med_batt_hr, pga_hard_mult, fiber_bonus) = cfg.warning.telecom_backup.resilience_params();
     let hrs_after = cfg.warning.hours_post_mainshock.clamp(0.1, 72.0);
@@ -699,29 +702,28 @@ pub fn run_fema_comms_monte_carlo(
 
             let sa10_city =
                 (base_sa10_g * (0.34 * z_inter + 0.22 * z_corr[0]).exp()).clamp(0.03, 2.6);
-            let pga_city = (sa10_city * 1.12).clamp(0.04, 2.5);
+            let pga_city =
+                crate::seismic_mc::median_pga_g_from_sa10(sa10_city, seis_cfg.vs30_m_per_s);
             let pgv_cm_s = median_pgv_cm_s_from_sa10(sa10_city, seis_cfg.vs30_m_per_s);
             let p_grid_out = normal_cdf_phi((pga_city / 0.30).ln() / 0.50);
             let pipe_rr = ala_hazus_pipe_repair_rate_per_km(
                 pgv_cm_s,
+                seis_cfg.pipe_fragility_law,
                 seis_cfg.baseline_water_pipe_material,
-                1.0,
+                250.0,
+                false,
             );
 
             // Bridge seismic closures
             let mut seg_closed = vec![false; n_seg];
             let mut any_bridge_closed = false;
             for br in &bridges {
-                let med_ext = if br.seismically_retrofitted {
-                    br.archetype.median_sa10_extensive_g() * 1.42
-                } else {
-                    br.archetype.median_sa10_extensive_g()
-                };
-                if rng.next_f64_open01() < normal_cdf_phi((sa10_city / med_ext.max(0.12)).ln() / 0.60)
-                {
+                if rng.next_f64_open01() < br.effective_archetype.exceedance_probs(sa10_city)[2] {
                     any_bridge_closed = true;
-                    if br.segment_id < n_seg {
-                        seg_closed[br.segment_id] = true;
+                    for &sid in &br.segment_ids {
+                        if sid < n_seg {
+                            seg_closed[sid] = true;
+                        }
                     }
                 }
             }
