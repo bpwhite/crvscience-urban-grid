@@ -226,7 +226,7 @@ cargo run --release -- wtp-turbidity --scenario corvallis --policy ferric-pac-we
 ## Citation & CRV Science Apps Hub
 
 - **CRV Science Apps Hub**: [https://crvscience.com/apps](https://crvscience.com/apps)
-- **Companion Preprint (`APP-PREPRINT-11`)**: *Urban-Grid: Microscopic Traffic Simulation, Maximal Covering Emergency Siting, and Multi-Hazard Lifeline Resilience* — [https://crvscience.com/apps/preprints/urban-grid-microscopic-traffic-resilience](https://crvscience.com/apps/preprints/urban-grid-microscopic-traffic-resilience)
+- **Companion Preprint (`APP-PREPRINT-11`)**: *Urban-Grid: Modeling City Traffic, Emergency Response Coverage, and Earthquake Evacuation* — [https://crvscience.com/apps/preprints/urban-grid-microscopic-traffic-resilience](https://crvscience.com/apps/preprints/urban-grid-microscopic-traffic-resilience)
 - **Concept DOI**: [10.5281/zenodo.24222394](https://doi.org/10.5281/zenodo.24222394)
 - **Repository**: [https://github.com/bpwhite/crvscience-urban-grid](https://github.com/bpwhite/crvscience-urban-grid)
 - **Validation Telemetry**: See [`validation/README.md`](validation/README.md) (`cargo test --workspace`).
@@ -234,7 +234,7 @@ cargo run --release -- wtp-turbidity --scenario corvallis --policy ferric-pac-we
 ```bibtex
 @article{white2026urbangrid,
   author  = {White, Bryan P.},
-  title   = {Urban-Grid: Microscopic Traffic Simulation, Maximal Covering Emergency Siting, and Multi-Hazard Lifeline Resilience},
+  title   = {Urban-Grid: Modeling City Traffic, Emergency Response Coverage, and Earthquake Evacuation},
   journal = {CRV Science Apps Preprints},
   year    = {2026},
   doi     = {10.5281/zenodo.24222394},

@@ -15,7 +15,7 @@ license:
   - Apache-2.0
 preferred-citation:
   type: article
-  title: "Urban-Grid: Microscopic Traffic Simulation, Maximal Covering Emergency Siting, and Multi-Hazard Lifeline Resilience"
+  title: "Urban-Grid: Modeling City Traffic, Emergency Response Coverage, and Earthquake Evacuation"
   authors:
     - family-names: "White"
       given-names: "Bryan P."
