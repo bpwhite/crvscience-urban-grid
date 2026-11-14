@@ -1,0 +1,4 @@
+route_id,agency_id,route_short_name,route_long_name,route_type,route_color
+R1_99W,CTS,1,"OR-99W North-South Trunk Couplet",3,EF4444
+R2_OR34,CTS,2,"Harrison / Van Buren East-West Crosstown",3,38BDF8
+R5_MONROE,CTS,5,"Monroe Campus-Downtown Circulator",3,10B981

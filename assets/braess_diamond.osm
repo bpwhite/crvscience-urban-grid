@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="urban-grid">
+  <node id="1" lat="44.565300" lon="-123.265220"/>
+  <node id="2" lat="44.565300" lon="-123.263900"/>
+  <node id="3" lat="44.566250" lon="-123.262200"/>
+  <node id="4" lat="44.564350" lon="-123.262200"/>
+  <node id="5" lat="44.565300" lon="-123.260500"/>
+  <node id="6" lat="44.565300" lon="-123.259180"/>
+  <node id="31" lat="44.566070" lon="-123.261130"/>
+  <node id="41" lat="44.564530" lon="-123.263270"/>
+  <way id="701">
+    <nd ref="1"/><nd ref="2"/>
+    <tag k="name" v="West Inbound Trunk"/><tag k="highway" v="trunk"/><tag k="lanes" v="3"/><tag k="oneway" v="yes"/><tag k="maxspeed" v="40 mph"/>
+  </way>
+  <way id="702">
+    <nd ref="2"/><nd ref="3"/>
+    <tag k="name" v="NW Short Bottleneck (1-Lane)"/><tag k="highway" v="primary"/><tag k="lanes" v="1"/><tag k="oneway" v="yes"/><tag k="maxspeed" v="35 mph"/>
+  </way>
+  <way id="703">
+    <nd ref="3"/><nd ref="31"/><nd ref="5"/>
+    <tag k="name" v="NE Wide Bypass (2-Lane)"/><tag k="highway" v="secondary"/><tag k="lanes" v="2"/><tag k="oneway" v="yes"/><tag k="maxspeed" v="20 mph"/>
+  </way>
+  <way id="704">
+    <nd ref="2"/><nd ref="41"/><nd ref="4"/>
+    <tag k="name" v="SW Wide Bypass (2-Lane)"/><tag k="highway" v="secondary"/><tag k="lanes" v="2"/><tag k="oneway" v="yes"/><tag k="maxspeed" v="20 mph"/>
+  </way>
+  <way id="705">
+    <nd ref="4"/><nd ref="5"/>
+    <tag k="name" v="SE Short Bottleneck (1-Lane)"/><tag k="highway" v="primary"/><tag k="lanes" v="1"/><tag k="oneway" v="yes"/><tag k="maxspeed" v="35 mph"/>
+  </way>
+  <way id="706">
+    <nd ref="5"/><nd ref="6"/>
+    <tag k="name" v="East Outbound Trunk"/><tag k="highway" v="trunk"/><tag k="lanes" v="3"/><tag k="oneway" v="yes"/><tag k="maxspeed" v="40 mph"/>
+  </way>
+  <way id="799">
+    <nd ref="3"/><nd ref="4"/>
+    <tag k="name" v="Braess Central Shortcut (N-S)"/><tag k="highway" v="trunk"/><tag k="lanes" v="2"/><tag k="oneway" v="yes"/><tag k="maxspeed" v="55 mph"/>
+  </way>
+</osm>

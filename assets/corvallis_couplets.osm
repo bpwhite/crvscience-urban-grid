@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="urban-grid">
+  <node id="11" lat="44.567300" lon="-123.264400"><tag k="highway" v="traffic_signals"/></node>
+  <node id="12" lat="44.567300" lon="-123.262900"><tag k="highway" v="traffic_signals"/></node>
+  <node id="13" lat="44.567300" lon="-123.261400"><tag k="highway" v="traffic_signals"/></node>
+  <node id="14" lat="44.567300" lon="-123.259900"><tag k="highway" v="traffic_signals"/></node>
+  <node id="21" lat="44.566200" lon="-123.264400"><tag k="highway" v="traffic_signals"/></node>
+  <node id="22" lat="44.566200" lon="-123.262900"><tag k="highway" v="traffic_signals"/></node>
+  <node id="23" lat="44.566200" lon="-123.261400"><tag k="highway" v="traffic_signals"/></node>
+  <node id="24" lat="44.566200" lon="-123.259900"><tag k="highway" v="traffic_signals"/></node>
+  <node id="31" lat="44.565100" lon="-123.264400"/>
+  <node id="32" lat="44.565100" lon="-123.262900"><tag k="highway" v="traffic_signals"/></node>
+  <node id="33" lat="44.565100" lon="-123.261400"><tag k="highway" v="traffic_signals"/></node>
+  <node id="34" lat="44.565100" lon="-123.259900"/>
+  <node id="41" lat="44.564000" lon="-123.264400"><tag k="highway" v="traffic_signals"/></node>
+  <node id="42" lat="44.564000" lon="-123.262900"><tag k="highway" v="traffic_signals"/></node>
+  <node id="43" lat="44.564000" lon="-123.261400"><tag k="highway" v="traffic_signals"/></node>
+  <node id="44" lat="44.564000" lon="-123.259900"><tag k="highway" v="traffic_signals"/></node>
+  <way id="1000"><nd ref="14"/><nd ref="13"/><nd ref="12"/><nd ref="11"/><tag k="name" v="NW Harrison Blvd (OR-34 W)"/><tag k="highway" v="primary"/><tag k="lanes" v="2"/><tag k="oneway" v="yes"/><tag k="maxspeed" v="25 mph"/></way>
+  <way id="1001"><nd ref="21"/><nd ref="22"/><nd ref="23"/><nd ref="24"/><tag k="name" v="NW Van Buren Ave (OR-34 E)"/><tag k="highway" v="primary"/><tag k="lanes" v="2"/><tag k="oneway" v="yes"/><tag k="maxspeed" v="25 mph"/></way>
+  <way id="1002"><nd ref="31"/><nd ref="32"/><nd ref="33"/><nd ref="34"/><tag k="name" v="NW Jackson Ave"/><tag k="highway" v="tertiary"/><tag k="lanes" v="2"/><tag k="oneway" v="no"/><tag k="maxspeed" v="20 mph"/></way>
+  <way id="1003"><nd ref="41"/><nd ref="42"/><nd ref="43"/><nd ref="44"/><tag k="name" v="NW Monroe Ave"/><tag k="highway" v="secondary"/><tag k="lanes" v="2"/><tag k="oneway" v="no"/><tag k="maxspeed" v="20 mph"/></way>
+  <way id="2000"><nd ref="11"/><nd ref="21"/><nd ref="31"/><nd ref="41"/><tag k="name" v="NW 5th St"/><tag k="highway" v="tertiary"/><tag k="lanes" v="2"/><tag k="oneway" v="no"/><tag k="maxspeed" v="20 mph"/></way>
+  <way id="2001"><nd ref="12"/><nd ref="22"/><nd ref="32"/><nd ref="42"/><tag k="name" v="NW 4th St (OR-99W S)"/><tag k="highway" v="trunk"/><tag k="lanes" v="3"/><tag k="oneway" v="yes"/><tag k="maxspeed" v="25 mph"/></way>
+  <way id="2002"><nd ref="43"/><nd ref="33"/><nd ref="23"/><nd ref="13"/><tag k="name" v="NW 3rd St (OR-99W N)"/><tag k="highway" v="trunk"/><tag k="lanes" v="3"/><tag k="oneway" v="yes"/><tag k="maxspeed" v="25 mph"/></way>
+  <way id="2003"><nd ref="14"/><nd ref="24"/><nd ref="34"/><nd ref="44"/><tag k="name" v="NW 2nd St"/><tag k="highway" v="secondary"/><tag k="lanes" v="2"/><tag k="oneway" v="no"/><tag k="maxspeed" v="20 mph"/></way>
+</osm>

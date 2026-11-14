@@ -1,0 +1,2 @@
+agency_id,agency_name,agency_url,agency_timezone,agency_lang
+CTS,Corvallis Transit System,https://corvallistransit.com/rtt/public/,America/Los_Angeles,en

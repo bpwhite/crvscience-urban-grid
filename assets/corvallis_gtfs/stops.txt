@@ -1,0 +1,11 @@
+stop_id,stop_name,stop_lat,stop_lon
+DTC_5TH_MONROE,"Downtown Transit Center (NW 5th & Monroe)",44.564050,-123.264150
+MONROE_3RD,"NW Monroe Ave & 3rd St",44.564050,-123.261600
+HARRISON_2ND,"NW Harrison Blvd & 2nd St (WB)",44.567280,-123.260200
+HARRISON_4TH,"NW Harrison Blvd & 4th St (WB)",44.567280,-123.262750
+FOURTH_VANBUREN,"NW 4th St & Van Buren Ave (SB)",44.566050,-123.262900
+FOURTH_JACKSON,"NW 4th St & Jackson Ave (SB)",44.564950,-123.262900
+THIRD_JACKSON,"NW 3rd St & Jackson Ave (NB)",44.565250,-123.261400
+THIRD_HARRISON,"NW 3rd St & Harrison Blvd (NB)",44.567100,-123.261400
+VANBUREN_5TH,"NW Van Buren Ave & 5th St (EB)",44.566200,-123.264150
+VANBUREN_2ND,"NW Van Buren Ave & 2nd St (EB)",44.566200,-123.260100

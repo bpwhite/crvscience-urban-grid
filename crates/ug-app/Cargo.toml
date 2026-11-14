@@ -1,0 +1,28 @@
+[package]
+name = "ug-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Interactive egui + custom wgpu WGSL 120 FPS desktop workbench, Ratatui terminal monitor, and headless batch CLI for urban-grid"
+
+[[bin]]
+name = "urban-grid"
+path = "src/main.rs"
+
+[features]
+default = ["gui", "tui"]
+gui = ["dep:eframe"]
+tui = ["dep:ratatui", "dep:crossterm"]
+pbf = ["ug-core/pbf"]
+overpass = ["ug-core/overpass"]
+
+[dependencies]
+ug-core = { path = "../ug-core" }
+bytemuck.workspace = true
+rayon.workspace = true
+clap = { version = "4.5", features = ["derive"] }
+serde.workspace = true
+serde_json.workspace = true
+eframe = { version = "0.30", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "x11", "wayland"], optional = true }
+ratatui = { version = "0.28", optional = true }
+crossterm = { version = "0.28", optional = true }
