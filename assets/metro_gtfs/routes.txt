@@ -1,0 +1,4 @@
+route_id,agency_id,route_short_name,route_long_name,route_type,route_color
+R1_TRUNK,MTS,1,"North-South Riverfront Trunk Couplet",3,EF4444
+R2_CROSS,MTS,2,"Harbor / Westbank Crosstown Arterial",3,38BDF8
+R5_LOOP,MTS,5,"Downtown to Eastbank Bridges Circulator",3,10B981

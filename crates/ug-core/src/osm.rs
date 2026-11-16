@@ -60,7 +60,11 @@ pub struct RawTurnRestriction {
 pub struct RawOsmDataset {
     pub nodes: HashMap<String, RawOsmNode>,
     pub ways: Vec<RawOsmWay>,
+    #[serde(default)]
+    pub waterways: Vec<RawOsmWay>,
     pub restrictions: Vec<RawTurnRestriction>,
+    #[serde(default)]
+    pub city_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -112,6 +116,16 @@ pub fn is_drivable_highway(tag: &str) -> bool {
     )
 }
 
+pub fn is_waterway_or_water(tags: &HashMap<String, String>) -> bool {
+    tags.get("waterway")
+        .map(|w| matches!(w.as_str(), "river" | "canal" | "stream" | "bay" | "riverbank"))
+        .unwrap_or(false)
+        || tags
+            .get("natural")
+            .map(|n| matches!(n.as_str(), "water" | "bay" | "coastline"))
+            .unwrap_or(false)
+}
+
 /// Parses standard OpenStreetMap v0.6 `.osm` XML into `RawOsmDataset`.
 pub fn parse_osm_xml_str(xml: &str) -> Result<RawOsmDataset, OsmError> {
     let mut reader = Reader::from_str(xml);
@@ -127,6 +141,16 @@ pub fn parse_osm_xml_str(xml: &str) -> Result<RawOsmDataset, OsmError> {
     loop {
         match reader.read_event()? {
             Event::Start(e) => match e.name().as_ref() {
+                b"osm" => {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"city" {
+                            let val = String::from_utf8_lossy(&attr.value).into_owned();
+                            if !val.trim().is_empty() {
+                                dataset.city_name = Some(val);
+                            }
+                        }
+                    }
+                }
                 b"node" => {
                     let mut id = String::new();
                     let mut lat = 0.0;
@@ -249,13 +273,16 @@ pub fn parse_osm_xml_str(xml: &str) -> Result<RawOsmDataset, OsmError> {
                 }
                 b"way" => {
                     if let Some(w) = cur_way.take() {
-                        if w.node_refs.len() >= 2
-                            && w.tags
+                        if w.node_refs.len() >= 2 {
+                            if w.tags
                                 .get("highway")
                                 .map(|h| is_drivable_highway(h))
                                 .unwrap_or(false)
-                        {
-                            dataset.ways.push(w);
+                            {
+                                dataset.ways.push(w);
+                            } else if is_waterway_or_water(&w.tags) {
+                                dataset.waterways.push(w);
+                            }
                         }
                     }
                 }
@@ -350,11 +377,11 @@ pub fn parse_overpass_json_str(json_str: &str) -> Result<RawOsmDataset, OsmError
             }
             "way" => {
                 let tags = el.tags.unwrap_or_default();
-                if tags
+                let is_hwy = tags
                     .get("highway")
                     .map(|h| is_drivable_highway(h))
-                    .unwrap_or(false)
-                {
+                    .unwrap_or(false);
+                if is_hwy || is_waterway_or_water(&tags) {
                     let node_refs: Vec<String> = el
                         .nodes
                         .unwrap_or_default()
@@ -362,11 +389,16 @@ pub fn parse_overpass_json_str(json_str: &str) -> Result<RawOsmDataset, OsmError
                         .map(|v| v.to_string().trim_matches('"').to_string())
                         .collect();
                     if node_refs.len() >= 2 {
-                        ds.ways.push(RawOsmWay {
+                        let w = RawOsmWay {
                             id: id_str,
                             node_refs,
                             tags,
-                        });
+                        };
+                        if is_hwy {
+                            ds.ways.push(w);
+                        } else {
+                            ds.waterways.push(w);
+                        }
                     }
                 }
             }
@@ -477,18 +509,23 @@ pub fn load_osm_pbf_path(path: &Path) -> Result<RawOsmDataset, OsmError> {
                     .tags()
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect();
-                if tags
+                let is_hwy = tags
                     .get("highway")
                     .map(|h| is_drivable_highway(h))
-                    .unwrap_or(false)
-                {
+                    .unwrap_or(false);
+                if is_hwy || is_waterway_or_water(&tags) {
                     let node_refs: Vec<String> = w.refs().map(|r| r.to_string()).collect();
                     if node_refs.len() >= 2 {
-                        ds.ways.push(RawOsmWay {
+                        let rw = RawOsmWay {
                             id: w.id().to_string(),
                             node_refs,
                             tags,
-                        });
+                        };
+                        if is_hwy {
+                            ds.ways.push(rw);
+                        } else {
+                            ds.waterways.push(rw);
+                        }
                     }
                 }
             }
@@ -517,102 +554,1196 @@ pub fn fetch_overpass_bbox(
     parse_overpass_json_str(&body)
 }
 
-/// Built-in Downtown Corvallis OR-99W / OR-34 One-Way Couplets `.osm` XML fixture
-/// centered on Benton County Courthouse (44.56528, -123.26222).
-pub fn builtin_corvallis_couplets_osm() -> String {
-    let lats = [44.5673, 44.5662, 44.5651, 44.5640];
-    let lons = [-123.2644, -123.2629, -123.2614, -123.2599];
-    let mut out = vec![
-        r#"<?xml version="1.0" encoding="UTF-8"?>"#.to_string(),
-        r#"<osm version="0.6" generator="urban-grid">"#.to_string(),
+struct OsmCityBuilder {
+    city_name: String,
+    c_lat: f64,
+    c_lon: f64,
+    m_lat: f64,
+    m_lon: f64,
+    next_nid: usize,
+    next_wid: usize,
+    nodes_xml: Vec<String>,
+    ways_xml: Vec<String>,
+}
+
+impl OsmCityBuilder {
+    fn new(city_name: &str) -> Self {
+        let c_lat = 40.0000_f64;
+        let c_lon = -105.0000_f64;
+        let m_lat = 1.0 / 110_540.0;
+        let m_lon = 1.0 / (111_320.0 * c_lat.to_radians().cos());
+        Self {
+            city_name: city_name.to_string(),
+            c_lat,
+            c_lon,
+            m_lat,
+            m_lon,
+            next_nid: 1,
+            next_wid: 1,
+            nodes_xml: Vec::new(),
+            ways_xml: Vec::new(),
+        }
+    }
+
+    fn node(&mut self, x_m: f64, y_m: f64, signal: bool) -> usize {
+        let id = self.next_nid;
+        self.next_nid += 1;
+        // Screen/OSM projection uses y_south_m = -(lat - c_lat) * 110540
+        let lat = self.c_lat - y_m * self.m_lat;
+        let lon = self.c_lon + x_m * self.m_lon;
+        if signal {
+            self.nodes_xml.push(format!(
+                r#"  <node id="{id}" lat="{lat:.6}" lon="{lon:.6}"><tag k="highway" v="traffic_signals"/></node>"#
+            ));
+        } else {
+            self.nodes_xml
+                .push(format!(r#"  <node id="{id}" lat="{lat:.6}" lon="{lon:.6}"/>"#));
+        }
+        id
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn way(
+        &mut self,
+        name: &str,
+        highway: &str,
+        lanes: usize,
+        oneway: bool,
+        maxspeed: &str,
+        bridge: bool,
+        busway: bool,
+        roundabout: bool,
+        nds: &[usize],
+    ) {
+        if nds.len() < 2 {
+            return;
+        }
+        let id = self.next_wid;
+        self.next_wid += 1;
+        self.ways_xml.push(format!(r#"  <way id="{id}">"#));
+        for &n in nds {
+            self.ways_xml.push(format!(r#"    <nd ref="{n}"/>"#));
+        }
+        let ow = if oneway { "yes" } else { "no" };
+        self.ways_xml.push(format!(r#"    <tag k="name" v="{name}"/>"#));
+        self.ways_xml
+            .push(format!(r#"    <tag k="highway" v="{highway}"/>"#));
+        self.ways_xml
+            .push(format!(r#"    <tag k="lanes" v="{lanes}"/>"#));
+        self.ways_xml.push(format!(r#"    <tag k="oneway" v="{ow}"/>"#));
+        self.ways_xml
+            .push(format!(r#"    <tag k="maxspeed" v="{maxspeed}"/>"#));
+        if bridge {
+            self.ways_xml.push(r#"    <tag k="bridge" v="yes"/>"#.to_string());
+        }
+        if busway {
+            self.ways_xml.push(r#"    <tag k="busway" v="lane"/>"#.to_string());
+        }
+        if roundabout {
+            self.ways_xml
+                .push(r#"    <tag k="junction" v="roundabout"/>"#.to_string());
+        }
+        self.ways_xml.push("  </way>".to_string());
+    }
+
+    fn waterway(
+        &mut self,
+        name: &str,
+        kind: &str,
+        width_m: f64,
+        is_polygon: bool,
+        nds: &[usize],
+    ) {
+        if nds.len() < 2 {
+            return;
+        }
+        let id = self.next_wid;
+        self.next_wid += 1;
+        self.ways_xml.push(format!(r#"  <way id="{id}">"#));
+        for &n in nds {
+            self.ways_xml.push(format!(r#"    <nd ref="{n}"/>"#));
+        }
+        self.ways_xml.push(format!(r#"    <tag k="name" v="{name}"/>"#));
+        if is_polygon {
+            self.ways_xml
+                .push(format!(r#"    <tag k="natural" v="{kind}"/>"#));
+            self.ways_xml.push(r#"    <tag k="area" v="yes"/>"#.to_string());
+        } else {
+            self.ways_xml
+                .push(format!(r#"    <tag k="waterway" v="{kind}"/>"#));
+        }
+        self.ways_xml
+            .push(format!(r#"    <tag k="width" v="{width_m:.1}"/>"#));
+        self.ways_xml.push("  </way>".to_string());
+    }
+
+    fn finish(self) -> String {
+        let mut out = Vec::with_capacity(self.nodes_xml.len() + self.ways_xml.len() + 4);
+        out.push(r#"<?xml version="1.0" encoding="UTF-8"?>"#.to_string());
+        out.push(format!(
+            r#"<osm version="0.6" generator="urban-grid" city="{}">"#,
+            self.city_name
+        ));
+        out.extend(self.nodes_xml);
+        out.extend(self.ways_xml);
+        out.push("</osm>".to_string());
+        out.join("\n")
+    }
+}
+
+/// 1. Built-in `Riverfront Bridges Metro`: winding S-curve river + 4 bridges + angled
+/// waterfront boulevards + West CBD one-way couplets + East tilted neighborhoods.
+pub fn builtin_riverfront_bridges_osm() -> String {
+    let mut b = OsmCityBuilder::new("Riverfront Bridges Metro");
+    let river_x = |y: f64| -> f64 { 52.0 * (y / 215.0).sin() + 18.0 * (y / 380.0).cos() };
+
+    let mut river_pts = Vec::new();
+    for step in -4..=4 {
+        let y = (step as f64) * 120.0;
+        river_pts.push(b.node(river_x(y), y, false));
+    }
+    b.waterway("Central River Channel", "river", 82.0, false, &river_pts);
+
+    let y_rows = [-300.0_f64, -100.0, 100.0, 300.0];
+    let mut w_outer = Vec::with_capacity(4);
+    let mut w_c1 = Vec::with_capacity(4);
+    let mut w_c2 = Vec::with_capacity(4);
+    let mut w_prom = Vec::with_capacity(4);
+    let mut e_pkwy = Vec::with_capacity(4);
+    let mut e_mid = Vec::with_capacity(4);
+    let mut e_loop = Vec::with_capacity(4);
+
+    let mut wf = Vec::with_capacity(4);
+    let mut ef = Vec::with_capacity(4);
+
+    for (ri, &y) in y_rows.iter().enumerate() {
+        let sig = true;
+        wf.push(b.node(-520.0, y, false));
+        w_outer.push(b.node(-395.0, y, ri % 2 == 0));
+        w_c1.push(b.node(-280.0, y, sig));
+        w_c2.push(b.node(-185.0, y, sig));
+        w_prom.push(b.node(river_x(y) - 66.0, y, sig));
+
+        let ye = y + 22.0 * ((ri as f64) - 1.5).signum() * 0.4;
+        e_pkwy.push(b.node(river_x(y) + 66.0, y, sig));
+        e_mid.push(b.node(235.0 + 0.14 * ye, ye + 18.0, sig));
+        e_loop.push(b.node(375.0 + 0.14 * ye, ye + 34.0, ri % 2 == 1));
+        ef.push(b.node(520.0, ye + 45.0, false));
+    }
+
+    // North & South boundary feeders
+    let wn_outer = b.node(-395.0, -430.0, false);
+    let wn_c1 = b.node(-280.0, -430.0, false);
+    let wn_c2 = b.node(-185.0, -430.0, false);
+    let wn_prom = b.node(river_x(-430.0) - 66.0, -430.0, false);
+    let en_pkwy = b.node(river_x(-430.0) + 66.0, -430.0, false);
+    let en_mid = b.node(235.0 - 58.0, -425.0, false);
+    let en_loop = b.node(375.0 - 58.0, -425.0, false);
+
+    let ws_outer = b.node(-395.0, 430.0, false);
+    let ws_c1 = b.node(-280.0, 430.0, false);
+    let ws_c2 = b.node(-185.0, 430.0, false);
+    let ws_prom = b.node(river_x(430.0) - 66.0, 430.0, false);
+    let es_pkwy = b.node(river_x(430.0) + 66.0, 430.0, false);
+    let es_mid = b.node(235.0 + 58.0, 435.0, false);
+    let es_loop = b.node(375.0 + 58.0, 435.0, false);
+
+    let wm_outer = b.node(-395.0, 0.0, true);
+    let wm_c1 = b.node(-280.0, 0.0, true);
+    let wm_c2 = b.node(-185.0, 0.0, true);
+    let wp_n1 = b.node(river_x(-200.0) - 66.0, -200.0, false);
+    let wp_mid = b.node(river_x(0.0) - 66.0, 0.0, true);
+    let wp_s1 = b.node(river_x(200.0) - 66.0, 200.0, false);
+
+    // West Bank Arterials + 1-Way Trunk Couplets
+    b.way(
+        "Westbank Outer Ave",
+        "secondary",
+        4,
+        false,
+        "30 mph",
+        false,
+        false,
+        false,
+        &[
+            wn_outer, w_outer[0], w_outer[1], wm_outer, w_outer[2], w_outer[3], ws_outer,
+        ],
+    );
+    b.way(
+        "West Couplet Southbound",
+        "trunk",
+        3,
+        true,
+        "30 mph",
+        false,
+        true,
+        false,
+        &[wn_c1, w_c1[0], w_c1[1], wm_c1, w_c1[2], w_c1[3], ws_c1],
+    );
+    b.way(
+        "West Couplet Northbound",
+        "trunk",
+        3,
+        true,
+        "30 mph",
+        false,
+        true,
+        false,
+        &[ws_c2, w_c2[3], w_c2[2], wm_c2, w_c2[1], w_c2[0], wn_c2],
+    );
+    // Curved West Promenade hugging the river curve
+    b.way(
+        "Westbank Waterfront Promenade",
+        "primary",
+        4,
+        false,
+        "25 mph",
+        false,
+        false,
+        false,
+        &[
+            wn_prom,
+            w_prom[0],
+            wp_n1,
+            w_prom[1],
+            wp_mid,
+            w_prom[2],
+            wp_s1,
+            w_prom[3],
+            ws_prom,
+        ],
+    );
+
+    // Midtown connector to Waterfront Plaza
+    b.way(
+        "Civic Midtown Cross St",
+        "tertiary",
+        2,
+        false,
+        "20 mph",
+        false,
+        false,
+        false,
+        &[wm_outer, wm_c1, wm_c2, wp_mid],
+    );
+
+    // East Bank Curved Parkway & Angled Terrace Grid
+    let ep_n1 = b.node(river_x(-200.0) + 66.0, -200.0, false);
+    let ep_mid = b.node(river_x(0.0) + 66.0, 0.0, false);
+    let ep_s1 = b.node(river_x(200.0) + 66.0, 200.0, false);
+    b.way(
+        "Eastbank Parkway",
+        "primary",
+        4,
+        false,
+        "30 mph",
+        false,
+        false,
+        false,
+        &[
+            en_pkwy,
+            e_pkwy[0],
+            ep_n1,
+            e_pkwy[1],
+            ep_mid,
+            e_pkwy[2],
+            ep_s1,
+            e_pkwy[3],
+            es_pkwy,
+        ],
+    );
+    b.way(
+        "East Midtown Terrace Ave",
+        "secondary",
+        4,
+        false,
+        "30 mph",
+        false,
+        true,
+        false,
+        &[en_mid, e_mid[0], e_mid[1], e_mid[2], e_mid[3], es_mid],
+    );
+    b.way(
+        "East Highlands Ridge Blvd",
+        "tertiary",
+        2,
+        false,
+        "25 mph",
+        false,
+        false,
+        false,
+        &[en_loop, e_loop[0], e_loop[1], e_loop[2], e_loop[3], es_loop],
+    );
+
+    // E-W Bank Streets + 4 Distinct Bridge Crossings
+    let ew_names = [
+        ("North Viaduct Corridor", "trunk", 4, "35 mph", true),
+        ("Central Grand Arch Blvd", "primary", 4, "30 mph", true),
+        ("Midtown Terrace Blvd", "secondary", 4, "25 mph", false),
+        ("South Harborway Ave", "primary", 4, "30 mph", true),
     ];
-    for (r, lat) in lats.iter().enumerate() {
-        for (c, lon) in lons.iter().enumerate() {
-            let id = (r + 1) * 10 + (c + 1);
-            let is_sig = c == 1 || c == 2 || r == 0 || r == 1 || r == 3;
-            if is_sig {
-                out.push(format!(
-                    r#"  <node id="{id}" lat="{lat:.6}" lon="{lon:.6}"><tag k="highway" v="traffic_signals"/></node>"#
-                ));
+    let bridge_names = [
+        ("North Express Bridge", "trunk", 4, "35 mph", false),
+        ("Grand Central Arch Bridge", "primary", 4, "30 mph", true),
+        ("Midtown River Bridge", "secondary", 4, "25 mph", false),
+        ("South Wharf Bridge", "primary", 4, "30 mph", false),
+    ];
+    for ri in 0..4 {
+        let (wn, wh, wl, ws, wb) = ew_names[ri];
+        let west_nds = [wf[ri], w_outer[ri], w_c1[ri], w_c2[ri], w_prom[ri]];
+        if ri == 1 {
+            let mut rev = west_nds;
+            rev.reverse();
+            b.way(wn, wh, wl, true, ws, false, wb, false, &rev);
+        } else if ri == 2 {
+            b.way(wn, wh, wl, true, ws, false, wb, false, &west_nds);
+        } else {
+            b.way(wn, wh, wl, false, ws, false, wb, false, &west_nds);
+        }
+
+        b.way(
+            &format!("East Terrace St {}", ri + 1),
+            wh,
+            wl,
+            false,
+            ws,
+            false,
+            false,
+            false,
+            &[e_pkwy[ri], e_mid[ri], e_loop[ri], ef[ri]],
+        );
+
+        let (bn, bh, bl, bs, bbus) = bridge_names[ri];
+        b.way(
+            bn,
+            bh,
+            bl,
+            false,
+            bs,
+            true,
+            bbus,
+            false,
+            &[w_prom[ri], e_pkwy[ri]],
+        );
+    }
+
+    b.finish()
+}
+
+/// 2. Built-in `Harbor Bay & Peninsula`: curved coastal bay polygon shoreline + waterfront
+/// promenade + 35-deg diagonal boulevard cutting across offset districts + 2 bay bridges to Port Peninsula.
+pub fn builtin_harbor_peninsula_osm() -> String {
+    let mut b = OsmCityBuilder::new("Harbor Bay & Peninsula");
+
+    // Deep Harbor Bay polygons curving smoothly along SE coast while leaving Port Peninsula land clear
+    let upper_bay = [
+        b.node(105.0, 95.0, false),
+        b.node(185.0, -5.0, false),
+        b.node(245.0, -165.0, false),
+        b.node(365.0, -310.0, false),
+        b.node(590.0, -360.0, false),
+        b.node(590.0, 95.0, false),
+    ];
+    b.waterway("North Harbor Basin", "bay", 120.0, true, &upper_bay);
+
+    let south_channel = [
+        b.node(-310.0, 490.0, false),
+        b.node(-115.0, 325.0, false),
+        b.node(35.0, 225.0, false),
+        b.node(125.0, 120.0, false),
+        b.node(215.0, 120.0, false),
+        b.node(215.0, 490.0, false),
+    ];
+    b.waterway("Port Harbor Channel", "bay", 110.0, true, &south_channel);
+
+    // Curved Bayfront Corniche hugging shoreline
+    let c0 = b.node(-420.0, 415.0, false);
+    let c1 = b.node(-195.0, 290.0, true);
+    let c2 = b.node(-45.0, 185.0, true);
+    let c3 = b.node(75.0, 70.0, true);
+    let c4 = b.node(150.0, -55.0, true);
+    let c5 = b.node(210.0, -210.0, true);
+    let c6 = b.node(345.0, -350.0, true);
+    let c7 = b.node(525.0, -405.0, false);
+    b.way(
+        "Bayfront Corniche Promenade",
+        "primary",
+        4,
+        false,
+        "30 mph",
+        false,
+        true,
+        false,
+        &[c0, c1, c2, c3, c4, c5, c6, c7],
+    );
+
+    // 35-deg Diagonal Boulevard from NW Entry to Central Waterfront Hub (c3)
+    let d_entry = b.node(-520.0, -370.0, false);
+    let d1 = b.node(-365.0, -255.0, true);
+    let d2 = b.node(-210.0, -140.0, true);
+    let d3 = b.node(-65.0, -32.0, true);
+    b.way(
+        "Harbor Diagonal Express Blvd",
+        "trunk",
+        6,
+        false,
+        "35 mph",
+        false,
+        true,
+        false,
+        &[d_entry, d1, d2, d3, c3],
+    );
+
+    // North-West Harbor Orthogonal + Skewed Coastal Districts
+    let nw_w = b.node(-520.0, -255.0, false);
+    let nw_m = b.node(-210.0, -255.0, true);
+    let nw_e = b.node(-35.0, -245.0, true);
+    b.way(
+        "Upper Bay Avenue",
+        "secondary",
+        4,
+        false,
+        "30 mph",
+        false,
+        false,
+        false,
+        &[nw_w, d1, nw_m, nw_e, c5],
+    );
+
+    let mid_w = b.node(-520.0, -140.0, false);
+    let mid_w2 = b.node(-365.0, -140.0, true);
+    let mid_e = b.node(-40.0, -140.0, true);
+    b.way(
+        "Customs House Arterial",
+        "secondary",
+        4,
+        false,
+        "25 mph",
+        false,
+        false,
+        false,
+        &[mid_w, mid_w2, d2, mid_e, c4],
+    );
+
+    let sw_w = b.node(-520.0, 20.0, false);
+    let sw_1 = b.node(-365.0, 15.0, true);
+    let sw_2 = b.node(-210.0, -5.0, true);
+    b.way(
+        "West Wharf St",
+        "secondary",
+        4,
+        false,
+        "25 mph",
+        false,
+        false,
+        false,
+        &[sw_w, sw_1, sw_2, d3],
+    );
+
+    let low_w = b.node(-520.0, 185.0, false);
+    let low_1 = b.node(-365.0, 185.0, true);
+    let low_2 = b.node(-210.0, 185.0, true);
+    b.way(
+        "South Cannery Row",
+        "tertiary",
+        2,
+        false,
+        "25 mph",
+        false,
+        false,
+        false,
+        &[low_w, low_1, low_2, c2],
+    );
+
+    // North/South feeders and cross-links tying NW district together
+    let n_365 = b.node(-365.0, -430.0, false);
+    let n_210 = b.node(-210.0, -430.0, false);
+    let n_40 = b.node(-40.0, -430.0, false);
+    let s_365 = b.node(-365.0, 390.0, false);
+    let s_210 = b.node(-210.0, 390.0, false);
+    b.way(
+        "West Dock Blvd",
+        "secondary",
+        4,
+        false,
+        "30 mph",
+        false,
+        false,
+        false,
+        &[n_365, d1, mid_w2, sw_1, low_1, c1, s_365],
+    );
+    b.way(
+        "Midtown Harbor St",
+        "primary",
+        4,
+        false,
+        "30 mph",
+        false,
+        false,
+        false,
+        &[n_210, nw_m, d2, sw_2, low_2, s_210],
+    );
+    b.way(
+        "Old Town Pier Ave",
+        "secondary",
+        2,
+        false,
+        "25 mph",
+        false,
+        false,
+        false,
+        &[n_40, nw_e, mid_e, d3, c2],
+    );
+    let north_hill = b.node(120.0, -395.0, false);
+    b.way(
+        "North Headland Ridge Rd",
+        "tertiary",
+        2,
+        false,
+        "25 mph",
+        false,
+        false,
+        false,
+        &[n_40, north_hill, c6],
+    );
+
+    // Outer Port Terminal Peninsula connected via TWO Harbor Bay Bridges!
+    let p_nw = b.node(245.0, 165.0, true);
+    let p_ne = b.node(435.0, 175.0, true);
+    let p_se = b.node(455.0, 340.0, true);
+    let p_sw = b.node(245.0, 330.0, true);
+    let p_out = b.node(550.0, 260.0, false);
+
+    b.way(
+        "North Harbor Viaduct Bridge",
+        "trunk",
+        4,
+        false,
+        "35 mph",
+        true,
+        true,
+        false,
+        &[c3, p_nw],
+    );
+    b.way(
+        "South Bay Causeway Bridge",
+        "primary",
+        4,
+        false,
+        "30 mph",
+        true,
+        false,
+        false,
+        &[c2, p_sw],
+    );
+    b.way(
+        "Port Peninsula Wharf Loop",
+        "primary",
+        4,
+        false,
+        "30 mph",
+        false,
+        false,
+        false,
+        &[p_sw, p_nw, p_ne, p_se, p_sw],
+    );
+    b.way(
+        "East Port Breakwater Freight",
+        "trunk",
+        4,
+        false,
+        "40 mph",
+        false,
+        false,
+        false,
+        &[p_ne, p_out],
+    );
+    b.way(
+        "Container Terminal Slip",
+        "secondary",
+        2,
+        false,
+        "25 mph",
+        false,
+        false,
+        false,
+        &[p_nw, p_se],
+    );
+
+    b.finish()
+}
+
+/// 3. Built-in `Radial Ring & Star Plazas`: concentric inner & outer beltways + 8 radial avenues
+/// + 2 satellite roundabout plazas + southern civic canal with bridges.
+pub fn builtin_radial_ring_plazas_osm() -> String {
+    let mut b = OsmCityBuilder::new("Radial Ring & Star Plazas");
+
+    // Curved Southern Civic Canal
+    let canal_pts: Vec<usize> = [-520.0_f64, -340.0, -170.0, 0.0, 170.0, 340.0, 520.0]
+        .iter()
+        .map(|&x| {
+            let y = 212.0 + 48.0 * (x / 520.0_f64).powi(2);
+            b.node(x, y, false)
+        })
+        .collect();
+    b.waterway("Civic Reflecting Canal", "canal", 34.0, false, &canal_pts);
+
+    let polar = |r: f64, idx: usize| -> (f64, f64) {
+        let ang = (idx as f64) * std::f64::consts::FRAC_PI_4;
+        (r * ang.cos(), r * ang.sin())
+    };
+
+    let mut inner = Vec::with_capacity(8);
+    let mut mid = Vec::with_capacity(8);
+    let mut outer = Vec::with_capacity(8);
+    let mut feed = Vec::with_capacity(8);
+
+    for i in 0..8 {
+        let (xi, yi) = polar(125.0, i);
+        let (xm, ym) = polar(265.0, i);
+        let (xo, yo) = polar(400.0, i);
+        let (xf, yf) = polar(530.0, i);
+        inner.push(b.node(xi, yi, false));
+        mid.push(b.node(xm, ym, true));
+        outer.push(b.node(xo, yo, true));
+        feed.push(b.node(xf, yf, false));
+    }
+
+    // Inner Circulatory Roundabout Ring (CCW / oneway)
+    let mut inner_closed = inner.clone();
+    inner_closed.push(inner[0]);
+    b.way(
+        "Grand Star Inner Plaza Ring",
+        "primary",
+        2,
+        true,
+        "25 mph",
+        false,
+        false,
+        true,
+        &inner_closed,
+    );
+
+    // Mid Orbital Ring (splitting Canal crossing segments if needed; mid ring passes around S at y=+265 vs canal y=+212)
+    let mut mid_closed = mid.clone();
+    mid_closed.push(mid[0]);
+    b.way(
+        "Mid-City Orbital Boulevard",
+        "secondary",
+        4,
+        false,
+        "30 mph",
+        false,
+        true,
+        false,
+        &mid_closed,
+    );
+
+    // Outer Orbital Trunk Beltway
+    let mut outer_closed = outer.clone();
+    outer_closed.push(outer[0]);
+    b.way(
+        "Outer Metropolitan Beltway",
+        "trunk",
+        4,
+        false,
+        "40 mph",
+        false,
+        false,
+        false,
+        &outer_closed,
+    );
+
+    // 8 Radial Star Avenues + Canal Bridges on SE (1), S (2), SW (3) radials (y > 0 corresponds to sin > 0 -> i = 1, 2, 3)
+    let spoke_names = [
+        "East Promenade Radial",
+        "Southeast Harbor Radial",
+        "South Capitol Radial",
+        "Southwest Parkway Radial",
+        "West Civic Radial",
+        "Northwest University Radial",
+        "North Meridian Radial",
+        "Northeast Botanical Radial",
+    ];
+    for i in 0..8 {
+        let has_canal = matches!(i, 1 | 2 | 3);
+        if has_canal {
+            b.way(
+                &format!("{} Bridge", spoke_names[i]),
+                "primary",
+                4,
+                false,
+                "30 mph",
+                true,
+                i == 2,
+                false,
+                &[inner[i], mid[i]],
+            );
+            b.way(
+                spoke_names[i],
+                "primary",
+                4,
+                false,
+                "30 mph",
+                false,
+                i == 2,
+                false,
+                &[mid[i], outer[i], feed[i]],
+            );
+        } else {
+            b.way(
+                spoke_names[i],
+                "primary",
+                4,
+                false,
+                "30 mph",
+                false,
+                i == 6 || i == 0 || i == 4,
+                false,
+                &[inner[i], mid[i], outer[i], feed[i]],
+            );
+        }
+    }
+
+    // Two Satellite Diamond Plazas on East (i=0) & West (i=4) mid-ring neighborhoods
+    let ep_n = b.node(265.0, -48.0, false);
+    let ep_s = b.node(265.0, 48.0, false);
+    let ep_e = b.node(315.0, 0.0, false);
+    b.way(
+        "East Star Plaza Loop",
+        "tertiary",
+        2,
+        true,
+        "20 mph",
+        false,
+        false,
+        true,
+        &[mid[0], ep_n, ep_e, ep_s, mid[0]],
+    );
+    let wp_n = b.node(-265.0, -48.0, false);
+    let wp_s = b.node(-265.0, 48.0, false);
+    let wp_w = b.node(-315.0, 0.0, false);
+    b.way(
+        "West Star Plaza Loop",
+        "tertiary",
+        2,
+        true,
+        "20 mph",
+        false,
+        false,
+        true,
+        &[mid[4], wp_s, wp_w, wp_n, mid[4]],
+    );
+
+    b.finish()
+}
+
+/// 4. Built-in `Foothill Canyon WUI`: curved dendritic canyon roads, WUI hillside loops,
+/// meandering mountain creek + 3 creek bridges + 2 bottleneck evacuation trunks.
+pub fn builtin_foothill_canyon_wui_osm() -> String {
+    let mut b = OsmCityBuilder::new("Foothill Canyon WUI");
+
+    // Winding Mountain Creek flowing NE canyon -> SW mouth
+    let creek_pts = [
+        b.node(580.0, -415.0, false),
+        b.node(395.0, -255.0, false),
+        b.node(185.0, -110.0, false),
+        b.node(-15.0, 25.0, false),
+        b.node(-215.0, 175.0, false),
+        b.node(-420.0, 290.0, false),
+        b.node(-590.0, 365.0, false),
+    ];
+    b.waterway("Timberline Mountain Creek", "stream", 30.0, false, &creek_pts);
+
+    // South Bottleneck Evacuation Trunk #1 (Main Canyon Highway)
+    let t_w = b.node(-565.0, 255.0, false);
+    let t_1 = b.node(-355.0, 210.0, true);
+    let t_2 = b.node(-155.0, 130.0, true);
+    let t_3 = b.node(60.0, 42.0, true);
+    let t_4 = b.node(285.0, -75.0, true);
+    let t_e = b.node(560.0, -210.0, false);
+    b.way(
+        "South Canyon Evacuation Trunk",
+        "trunk",
+        4,
+        false,
+        "45 mph",
+        false,
+        true,
+        false,
+        &[t_w, t_1, t_2, t_3, t_4, t_e],
+    );
+
+    // West Foothill Bottleneck Trunk #2 (N-S Evacuation Mouth)
+    let w_n = b.node(-445.0, -390.0, false);
+    let w_1 = b.node(-410.0, -155.0, true);
+    let w_2 = b.node(-385.0, 65.0, true);
+    let w_s = b.node(-395.0, 425.0, false);
+    b.way(
+        "West Valley Mouth Highway",
+        "trunk",
+        4,
+        false,
+        "40 mph",
+        false,
+        false,
+        false,
+        &[w_n, w_1, w_2, t_1, w_s],
+    );
+
+    // Curved Dendritic North Canyon Collector hugging north side of creek
+    let c_w = b.node(-535.0, 125.0, false);
+    let c_1 = b.node(-310.0, 15.0, true);
+    let c_2 = b.node(-105.0, -100.0, true);
+    let c_3 = b.node(125.0, -205.0, true);
+    let c_4 = b.node(355.0, -310.0, true);
+    let c_e = b.node(545.0, -405.0, false);
+    b.way(
+        "North Canyon Ridge Collector",
+        "primary",
+        4,
+        false,
+        "35 mph",
+        false,
+        false,
+        false,
+        &[c_w, w_2, c_1, c_2, c_3, c_4, c_e],
+    );
+
+    // 3 Creek Bridges connecting North Canyon Collector <-> South Evacuation Trunk
+    b.way(
+        "West Creek Canyon Bridge",
+        "primary",
+        2,
+        false,
+        "30 mph",
+        true,
+        false,
+        false,
+        &[c_1, t_2],
+    );
+    b.way(
+        "Mid-Valley Creek Bridge",
+        "primary",
+        4,
+        false,
+        "30 mph",
+        true,
+        true,
+        false,
+        &[c_2, t_3],
+    );
+    b.way(
+        "Upper Timber Creek Bridge",
+        "secondary",
+        2,
+        false,
+        "25 mph",
+        true,
+        false,
+        false,
+        &[c_3, t_4],
+    );
+
+    // Dendritic North WUI Hillside Switchback Loops
+    let l1_a = b.node(-330.0, -145.0, false);
+    let l1_b = b.node(-225.0, -295.0, false);
+    let l1_c = b.node(-115.0, -245.0, false);
+    b.way(
+        "Pinecrest Switchback Loop",
+        "tertiary",
+        2,
+        false,
+        "20 mph",
+        false,
+        false,
+        false,
+        &[w_1, l1_a, l1_b, l1_c, c_2],
+    );
+    b.way(
+        "Pinecrest Ridge Spur",
+        "residential",
+        2,
+        false,
+        "20 mph",
+        false,
+        false,
+        false,
+        &[c_1, l1_a],
+    );
+
+    let l2_a = b.node(-25.0, -335.0, false);
+    let l2_b = b.node(145.0, -395.0, false);
+    let l2_c = b.node(215.0, -280.0, false);
+    b.way(
+        "Highland Crest WUI Loop",
+        "tertiary",
+        2,
+        false,
+        "20 mph",
+        false,
+        false,
+        false,
+        &[c_2, l2_a, l2_b, l2_c, c_3],
+    );
+
+    let l3_a = b.node(260.0, -395.0, false);
+    let l3_b = b.node(445.0, -425.0, false);
+    b.way(
+        "Lookout Summit Spur",
+        "residential",
+        2,
+        false,
+        "20 mph",
+        false,
+        false,
+        false,
+        &[c_3, l3_a, l3_b, c_4],
+    );
+
+    // South Foothill Meadow Loops
+    let s1_a = b.node(-170.0, 295.0, false);
+    let s1_b = b.node(45.0, 275.0, false);
+    let s1_c = b.node(145.0, 175.0, false);
+    b.way(
+        "South Meadow Foothill Loop",
+        "secondary",
+        2,
+        false,
+        "25 mph",
+        false,
+        false,
+        false,
+        &[t_2, s1_a, s1_b, s1_c, t_3],
+    );
+    let s2_a = b.node(295.0, 145.0, false);
+    let s2_b = b.node(435.0, 35.0, false);
+    b.way(
+        "East Saddle WUI Loop",
+        "tertiary",
+        2,
+        false,
+        "25 mph",
+        false,
+        false,
+        false,
+        &[t_3, s2_a, s2_b, t_4],
+    );
+
+    b.finish()
+}
+
+/// 5. Built-in `Hierarchical Multimodal Metropolis` (50k+ wgpu capacity):
+/// multi-district arterial hierarchy + diagonal BRT spine + curved river & 5 bridges.
+pub fn builtin_metropolis_50k_osm() -> String {
+    let mut b = OsmCityBuilder::new("Hierarchical Multimodal Metropolis");
+    let river_x = |y: f64| -> f64 { 88.0 * (y / 360.0).sin() + 10.0 };
+
+    let mut r_pts = Vec::new();
+    for step in -6..=6 {
+        let y = (step as f64) * 125.0;
+        r_pts.push(b.node(river_x(y), y, false));
+    }
+    b.waterway("Metropolitan River", "river", 86.0, false, &r_pts);
+
+    // Y bands (West CBD tighter, East wider, shared bridges at 5 crossing latitudes)
+    let ys = [-540.0_f64, -360.0, -180.0, 0.0, 180.0, 360.0, 540.0];
+    let w_cols = [-740.0_f64, -560.0, -400.0, -255.0, -145.0]; // col 4 tracks west bank
+    let e_cols = [145.0_f64, 275.0, 425.0, 595.0, 750.0]; // col 0 tracks east bank
+
+    let mut w_grid = vec![vec![0usize; 5]; ys.len()];
+    let mut e_grid = vec![vec![0usize; 5]; ys.len()];
+    let mut w_feed = Vec::with_capacity(ys.len());
+    let mut e_feed = Vec::with_capacity(ys.len());
+
+    for (ri, &y) in ys.iter().enumerate() {
+        let rx = river_x(y);
+        w_feed.push(b.node(-890.0, y, false));
+        e_feed.push(b.node(890.0, y, false));
+        for ci in 0..5 {
+            let xw = if ci == 4 {
+                rx - 74.0
             } else {
-                out.push(format!(r#"  <node id="{id}" lat="{lat:.6}" lon="{lon:.6}"/>"#));
-            }
+                w_cols[ci] + 0.03 * y * (ci as f64 - 2.0)
+            };
+            let xe = if ci == 0 {
+                rx + 74.0
+            } else {
+                e_cols[ci] + 0.06 * y
+            };
+            let y_e = y + 0.04 * (e_cols[ci] - 145.0);
+            w_grid[ri][ci] = b.node(xw, y, true);
+            e_grid[ri][ci] = b.node(xe, y_e, true);
         }
-        out.push(format!(r#"  <node id="{}" lat="{lat:.6}" lon="-123.265900"/>"#, 100 + r));
-        out.push(format!(r#"  <node id="{}" lat="{lat:.6}" lon="-123.258400"/>"#, 200 + r));
-    }
-    for (c, lon) in lons.iter().enumerate() {
-        out.push(format!(r#"  <node id="{}" lat="44.568400" lon="{lon:.6}"/>"#, 300 + c));
-        out.push(format!(r#"  <node id="{}" lat="44.562900" lon="{lon:.6}"/>"#, 400 + c));
-    }
-
-    let ew = [
-        ("NW Harrison Blvd (OR-34 W)", "primary", 2, "west", "25 mph"),
-        ("NW Van Buren Ave (OR-34 E)", "primary", 2, "east", "25 mph"),
-        ("NW Jackson Ave", "tertiary", 2, "no", "20 mph"),
-        ("NW Monroe Ave", "secondary", 2, "no", "20 mph"),
-    ];
-    for (r, (name, hwy, lanes, dir, mph)) in ew.iter().enumerate() {
-        let mut nds = vec![
-            100 + r,
-            (r + 1) * 10 + 1,
-            (r + 1) * 10 + 2,
-            (r + 1) * 10 + 3,
-            (r + 1) * 10 + 4,
-            200 + r,
-        ];
-        if *dir == "west" {
-            nds.reverse();
-        }
-        out.push(format!(r#"  <way id="{}">"#, 1000 + r));
-        for n in nds {
-            out.push(format!(r#"    <nd ref="{n}"/>"#));
-        }
-        let ow = if *dir == "no" { "no" } else { "yes" };
-        out.push(format!(r#"    <tag k="name" v="{name}"/>"#));
-        out.push(format!(r#"    <tag k="highway" v="{hwy}"/>"#));
-        out.push(format!(r#"    <tag k="lanes" v="{lanes}"/>"#));
-        out.push(format!(r#"    <tag k="oneway" v="{ow}"/>"#));
-        out.push(format!(r#"    <tag k="maxspeed" v="{mph}"/>"#));
-        out.push("  </way>".to_string());
     }
 
-    let ns = [
-        ("NW 5th St", "tertiary", 2, "no", "20 mph"),
-        ("NW 4th St (OR-99W S)", "trunk", 3, "south", "25 mph"),
-        ("NW 3rd St (OR-99W N)", "trunk", 3, "north", "25 mph"),
-        ("NW 2nd St", "secondary", 2, "no", "20 mph"),
-    ];
-    for (c, (name, hwy, lanes, dir, mph)) in ns.iter().enumerate() {
-        let mut nds = vec![300 + c, 10 + c + 1, 20 + c + 1, 30 + c + 1, 40 + c + 1, 400 + c];
-        if *dir == "north" {
-            nds.reverse();
-        }
-        out.push(format!(r#"  <way id="{}">"#, 2000 + c));
-        for n in nds {
-            out.push(format!(r#"    <nd ref="{n}"/>"#));
-        }
-        let ow = if *dir == "no" { "no" } else { "yes" };
-        out.push(format!(r#"    <tag k="name" v="{name}"/>"#));
-        out.push(format!(r#"    <tag k="highway" v="{hwy}"/>"#));
-        out.push(format!(r#"    <tag k="lanes" v="{lanes}"/>"#));
-        out.push(format!(r#"    <tag k="oneway" v="{ow}"/>"#));
-        out.push(format!(r#"    <tag k="maxspeed" v="{mph}"/>"#));
-        out.push("  </way>".to_string());
+    // North & South External Feeder Trunks
+    let mut wn_feed = Vec::with_capacity(5);
+    let mut ws_feed = Vec::with_capacity(5);
+    let mut en_feed = Vec::with_capacity(5);
+    let mut es_feed = Vec::with_capacity(5);
+    for ci in 0..5 {
+        let xwn = if ci == 4 { river_x(-690.0) - 74.0 } else { w_cols[ci] };
+        let xws = if ci == 4 { river_x(690.0) - 74.0 } else { w_cols[ci] };
+        let xen = if ci == 0 { river_x(-690.0) + 74.0 } else { e_cols[ci] - 35.0 };
+        let xes = if ci == 0 { river_x(690.0) + 74.0 } else { e_cols[ci] + 35.0 };
+        wn_feed.push(b.node(xwn, -690.0, false));
+        ws_feed.push(b.node(xws, 690.0, false));
+        en_feed.push(b.node(xen, -690.0, false));
+        es_feed.push(b.node(xes, 690.0, false));
     }
-    out.push("</osm>".to_string());
-    out.join("
-")
+
+    // West District North-South Boulevards + Outer Orbital
+    for ci in 0..5 {
+        let (hwy, lanes, mph, bus) = match ci {
+            0 => ("motorway", 6, "50 mph", false),
+            2 => ("trunk", 6, "35 mph", true),
+            4 => ("primary", 4, "30 mph", false),
+            _ => ("secondary", 4, "25 mph", false),
+        };
+        let mut nds = vec![wn_feed[ci]];
+        for ri in 0..ys.len() {
+            nds.push(w_grid[ri][ci]);
+        }
+        nds.push(ws_feed[ci]);
+        b.way(
+            &format!("West District Corridor {}", ci + 1),
+            hwy,
+            lanes,
+            false,
+            mph,
+            false,
+            bus,
+            false,
+            &nds,
+        );
+    }
+
+    // East District Angled Arterials + East Orbital
+    for ci in 0..5 {
+        let (hwy, lanes, mph, bus) = match ci {
+            0 => ("primary", 4, "30 mph", false),
+            2 => ("trunk", 6, "35 mph", true),
+            4 => ("motorway", 6, "50 mph", false),
+            _ => ("secondary", 4, "25 mph", false),
+        };
+        let mut nds = vec![en_feed[ci]];
+        for ri in 0..ys.len() {
+            nds.push(e_grid[ri][ci]);
+        }
+        nds.push(es_feed[ci]);
+        b.way(
+            &format!("East Midtown Ave {}", ci + 1),
+            hwy,
+            lanes,
+            false,
+            mph,
+            false,
+            bus,
+            false,
+            &nds,
+        );
+    }
+
+    // East-West Hierarchy + 5 Bridge Crossings (rows 1..=5)
+    for ri in 0..ys.len() {
+        let is_orbital = ri == 0 || ri == ys.len() - 1;
+        let (hwy, lanes, mph) = if is_orbital {
+            ("trunk", 6, "45 mph")
+        } else if ri % 2 == 1 {
+            ("primary", 6, "35 mph")
+        } else {
+            ("secondary", 4, "30 mph")
+        };
+        let mut w_nds = vec![w_feed[ri]];
+        w_nds.extend_from_slice(&w_grid[ri]);
+        b.way(
+            &format!("West Metro Ave {}", ri + 1),
+            hwy,
+            lanes,
+            false,
+            mph,
+            false,
+            ri == 3,
+            false,
+            &w_nds,
+        );
+
+        let mut e_nds = e_grid[ri].clone();
+        e_nds.push(e_feed[ri]);
+        b.way(
+            &format!("East Metro Ave {}", ri + 1),
+            hwy,
+            lanes,
+            false,
+            mph,
+            false,
+            ri == 3,
+            false,
+            &e_nds,
+        );
+
+        if matches!(ri, 0 | 2 | 3 | 4 | 6) {
+            b.way(
+                &format!("Metro River Bridge {}", ri + 1),
+                if ri == 3 { "trunk" } else { "primary" },
+                6,
+                false,
+                "35 mph",
+                true,
+                ri == 3,
+                false,
+                &[w_grid[ri][4], e_grid[ri][0]],
+            );
+        }
+    }
+
+    // Diagonal Express BRT Spine cutting SW -> Central River Bridge -> NE
+    b.way(
+        "Diagonal Express BRT Spine West",
+        "trunk",
+        6,
+        false,
+        "35 mph",
+        false,
+        true,
+        false,
+        &[
+            w_grid[6][0],
+            w_grid[5][1],
+            w_grid[4][2],
+            w_grid[3][3],
+            w_grid[3][4],
+        ],
+    );
+    b.way(
+        "Diagonal Express BRT Spine East",
+        "trunk",
+        6,
+        false,
+        "35 mph",
+        false,
+        true,
+        false,
+        &[
+            e_grid[3][0],
+            e_grid[2][1],
+            e_grid[1][2],
+            e_grid[0][4],
+        ],
+    );
+
+    b.finish()
 }
 
 pub fn builtin_roundabout_osm() -> String {
-    let c_lat = 44.5653_f64;
-    let c_lon = -123.2622_f64;
+    let c_lat = 40.0000_f64;
+    let c_lon = -105.0000_f64;
     let m_lat = 1.0 / 110_540.0;
     let m_lon = 1.0 / (111_320.0 * c_lat.to_radians().cos());
     let mut out = vec![
         r#"<?xml version="1.0" encoding="UTF-8"?>"#.to_string(),
-        r#"<osm version="0.6" generator="urban-grid">"#.to_string(),
+        r#"<osm version="0.6" generator="urban-grid" city="Modern 2-Lane Roundabout">"#.to_string(),
     ];
     let r_m = 28.0;
     for i in 0..8 {
@@ -666,21 +1797,20 @@ pub fn builtin_roundabout_osm() -> String {
         out.push("  </way>".to_string());
     }
     out.push("</osm>".to_string());
-    out.join("
-")
+    out.join("\n")
 }
 
 pub fn builtin_braess_diamond_osm() -> String {
     r#"<?xml version="1.0" encoding="UTF-8"?>
-<osm version="0.6" generator="urban-grid">
-  <node id="1" lat="44.565300" lon="-123.265220"/>
-  <node id="2" lat="44.565300" lon="-123.263900"/>
-  <node id="3" lat="44.566250" lon="-123.262200"/>
-  <node id="4" lat="44.564350" lon="-123.262200"/>
-  <node id="5" lat="44.565300" lon="-123.260500"/>
-  <node id="6" lat="44.565300" lon="-123.259180"/>
-  <node id="31" lat="44.566070" lon="-123.261130"/>
-  <node id="41" lat="44.564530" lon="-123.263270"/>
+<osm version="0.6" generator="urban-grid" city="Braess Paradox Network">
+  <node id="1" lat="40.000000" lon="-105.003020"/>
+  <node id="2" lat="40.000000" lon="-105.001700"/>
+  <node id="3" lat="40.000950" lon="-105.000000"/>
+  <node id="4" lat="39.999050" lon="-105.000000"/>
+  <node id="5" lat="40.000000" lon="-104.998300"/>
+  <node id="6" lat="40.000000" lon="-104.996980"/>
+  <node id="31" lat="40.000770" lon="-104.998930"/>
+  <node id="41" lat="39.999230" lon="-105.001070"/>
   <way id="701">
     <nd ref="1"/><nd ref="2"/>
     <tag k="name" v="West Inbound Trunk"/><tag k="highway" v="trunk"/><tag k="lanes" v="3"/><tag k="oneway" v="yes"/><tag k="maxspeed" v="40 mph"/>
@@ -711,109 +1841,4 @@ pub fn builtin_braess_diamond_osm() -> String {
   </way>
 </osm>"#
         .to_string()
-}
-
-
-/// Generates a metropolitan supergrid `.osm` v0.6 XML network (default `12x12` = 144 signalized
-/// intersections, >1,100 metric lanes, >140 lane-km of multi-modal boulevards, Complete Streets
-/// bus/bike corridors, and perimeter entry/exit trunks) designed to sustain 50,000+ simultaneous
-/// vehicles, cyclists, and sidewalk/crosswalk pedestrians without artificial curb gridlock.
-pub fn builtin_megacity_supergrid_osm(rows: usize, cols: usize) -> String {
-    let r_cnt = rows.clamp(4, 20);
-    let c_cnt = cols.clamp(4, 20);
-    let base_lat = 44.5653_f64;
-    let base_lon = -123.2622_f64;
-    let block_m = 135.0_f64;
-    let dlat = block_m / 110_540.0;
-    let dlon = block_m / (111_320.0 * base_lat.to_radians().cos());
-
-    let half_r = (r_cnt as f64 - 1.0) * 0.5;
-    let half_c = (c_cnt as f64 - 1.0) * 0.5;
-
-    let mut out = Vec::with_capacity(r_cnt * c_cnt * 8 + 512);
-    out.push(r#"<?xml version="1.0" encoding="UTF-8"?>"#.to_string());
-    out.push(r#"<osm version="0.6" generator="urban-grid-megacity">"#.to_string());
-
-    // Interior grid nodes (all signalized intersections)
-    for r in 0..r_cnt {
-        let lat = base_lat - (r as f64 - half_r) * dlat;
-        for c in 0..c_cnt {
-            let lon = base_lon + (c as f64 - half_c) * dlon;
-            let nid = 10_000 + r * 100 + c;
-            out.push(format!(
-                r#"  <node id="{nid}" lat="{lat:.6}" lon="{lon:.6}"><tag k="highway" v="traffic_signals"/></node>"#
-            ));
-        }
-        // West and East boundary feeder nodes for row r
-        let w_lon = base_lon + (-1.0 - half_c) * dlon;
-        let e_lon = base_lon + (c_cnt as f64 - half_c) * dlon;
-        let wnid = 50_000 + r;
-        let enid = 60_000 + r;
-        out.push(format!(r#"  <node id="{wnid}" lat="{lat:.6}" lon="{w_lon:.6}"/>"#));
-        out.push(format!(r#"  <node id="{enid}" lat="{lat:.6}" lon="{e_lon:.6}"/>"#));
-    }
-
-    // North and South boundary feeder nodes for col c
-    for c in 0..c_cnt {
-        let lon = base_lon + (c as f64 - half_c) * dlon;
-        let n_lat = base_lat - (-1.0 - half_r) * dlat;
-        let s_lat = base_lat - (r_cnt as f64 - half_r) * dlat;
-        let nnid = 70_000 + c;
-        let snid = 80_000 + c;
-        out.push(format!(r#"  <node id="{nnid}" lat="{n_lat:.6}" lon="{lon:.6}"/>"#));
-        out.push(format!(r#"  <node id="{snid}" lat="{s_lat:.6}" lon="{lon:.6}"/>"#));
-    }
-
-    // East-West avenues
-    for r in 0..r_cnt {
-        let wid = 100_000 + r;
-        let is_major = r % 3 == 0;
-        let (hwy, lanes_total, mph) = if is_major {
-            ("primary", 6, "35 mph")
-        } else if r % 2 == 0 {
-            ("secondary", 4, "30 mph")
-        } else {
-            ("tertiary", 4, "25 mph")
-        };
-        out.push(format!(r#"  <way id="{wid}">"#));
-        out.push(format!(r#"    <nd ref="{}"/>"#, 50_000 + r));
-        for c in 0..c_cnt {
-            out.push(format!(r#"    <nd ref="{}"/>"#, 10_000 + r * 100 + c));
-        }
-        out.push(format!(r#"    <nd ref="{}"/>"#, 60_000 + r));
-        out.push(format!(r#"    <tag k="name" v="Metro Ave {}"/>"#, r + 1));
-        out.push(format!(r#"    <tag k="highway" v="{hwy}"/>"#));
-        out.push(format!(r#"    <tag k="lanes" v="{lanes_total}"/>"#));
-        out.push(r#"    <tag k="oneway" v="no"/>"#.to_string());
-        out.push(format!(r#"    <tag k="maxspeed" v="{mph}"/>"#));
-        out.push("  </way>".to_string());
-    }
-
-    // North-South boulevards
-    for c in 0..c_cnt {
-        let wid = 200_000 + c;
-        let is_major = c % 3 == 0;
-        let (hwy, lanes_total, mph) = if is_major {
-            ("trunk", 6, "35 mph")
-        } else if c % 2 == 0 {
-            ("secondary", 4, "30 mph")
-        } else {
-            ("tertiary", 4, "25 mph")
-        };
-        out.push(format!(r#"  <way id="{wid}">"#));
-        out.push(format!(r#"    <nd ref="{}"/>"#, 70_000 + c));
-        for r in 0..r_cnt {
-            out.push(format!(r#"    <nd ref="{}"/>"#, 10_000 + r * 100 + c));
-        }
-        out.push(format!(r#"    <nd ref="{}"/>"#, 80_000 + c));
-        out.push(format!(r#"    <tag k="name" v="Grand Blvd {}"/>"#, c + 1));
-        out.push(format!(r#"    <tag k="highway" v="{hwy}"/>"#));
-        out.push(format!(r#"    <tag k="lanes" v="{lanes_total}"/>"#));
-        out.push(r#"    <tag k="oneway" v="no"/>"#.to_string());
-        out.push(format!(r#"    <tag k="maxspeed" v="{mph}"/>"#));
-        out.push("  </way>".to_string());
-    }
-
-    out.push("</osm>".to_string());
-    out.join("\n")
 }

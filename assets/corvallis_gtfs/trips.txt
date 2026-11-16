@@ -1,6 +1,0 @@
-route_id,service_id,trip_id,trip_headsign,direction_id
-R1_99W,WKDAY,T_R1_SB_01,"Southbound via NW 4th St",0
-R1_99W,WKDAY,T_R1_NB_01,"Northbound via NW 3rd St",1
-R2_OR34,WKDAY,T_R2_EB_01,"Eastbound via NW Van Buren Ave",0
-R2_OR34,WKDAY,T_R2_WB_01,"Westbound via NW Harrison Blvd",1
-R5_MONROE,WKDAY,T_R5_EB_01,"Downtown to Riverfront via Monroe",0

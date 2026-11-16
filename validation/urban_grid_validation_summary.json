@@ -6,83 +6,83 @@
   "slug": "urban-grid-microscopic-traffic-resilience",
   "t1_idm_mobil_fundamental_diagram": {
     "collision_events": 0,
-    "global_min_bumper_headway_m": 1.308,
+    "global_min_bumper_headway_m": 1.929,
     "idm_emergency_brake_mps2": -8.5,
     "idm_free_accel_mps2": 1.6,
-    "open_lane_km": 9.16,
+    "open_lane_km": 32.555,
     "regimes": [
       {
-        "active_vehicles": 143,
-        "completed_trips": 27,
+        "active_vehicles": 335,
+        "completed_trips": 21,
         "demand_veh_per_lane_hr": 240.0,
-        "density_veh_per_lane_km": 15.61,
-        "mean_speed_mph": 11.11,
-        "min_bumper_headway_m": 1.93,
-        "queued_vehicles": 46,
-        "throughput_veh_per_hr": 2430.0
+        "density_veh_per_lane_km": 10.29,
+        "mean_speed_mph": 13.17,
+        "min_bumper_headway_m": 1.945,
+        "queued_vehicles": 101,
+        "throughput_veh_per_hr": 1890.0
       },
       {
-        "active_vehicles": 206,
-        "completed_trips": 56,
+        "active_vehicles": 378,
+        "completed_trips": 46,
         "demand_veh_per_lane_hr": 600.0,
-        "density_veh_per_lane_km": 22.49,
-        "mean_speed_mph": 10.04,
-        "min_bumper_headway_m": 1.93,
-        "queued_vehicles": 75,
-        "throughput_veh_per_hr": 5040.0
+        "density_veh_per_lane_km": 11.61,
+        "mean_speed_mph": 13.35,
+        "min_bumper_headway_m": 1.945,
+        "queued_vehicles": 103,
+        "throughput_veh_per_hr": 4140.0
       },
       {
-        "active_vehicles": 274,
-        "completed_trips": 76,
+        "active_vehicles": 490,
+        "completed_trips": 83,
         "demand_veh_per_lane_hr": 960.0,
-        "density_veh_per_lane_km": 29.91,
-        "mean_speed_mph": 9.47,
+        "density_veh_per_lane_km": 15.05,
+        "mean_speed_mph": 13.25,
         "min_bumper_headway_m": 1.93,
-        "queued_vehicles": 105,
-        "throughput_veh_per_hr": 6840.0
+        "queued_vehicles": 129,
+        "throughput_veh_per_hr": 7470.0
       },
       {
-        "active_vehicles": 405,
-        "completed_trips": 115,
+        "active_vehicles": 843,
+        "completed_trips": 216,
         "demand_veh_per_lane_hr": 1320.0,
-        "density_veh_per_lane_km": 44.21,
-        "mean_speed_mph": 7.79,
-        "min_bumper_headway_m": 1.308,
-        "queued_vehicles": 162,
-        "throughput_veh_per_hr": 10350.0
+        "density_veh_per_lane_km": 25.89,
+        "mean_speed_mph": 11.27,
+        "min_bumper_headway_m": 1.93,
+        "queued_vehicles": 261,
+        "throughput_veh_per_hr": 19440.0
       },
       {
-        "active_vehicles": 414,
-        "completed_trips": 107,
+        "active_vehicles": 1029,
+        "completed_trips": 229,
         "demand_veh_per_lane_hr": 1680.0,
-        "density_veh_per_lane_km": 45.2,
-        "mean_speed_mph": 7.48,
-        "min_bumper_headway_m": 1.93,
-        "queued_vehicles": 181,
-        "throughput_veh_per_hr": 9630.0
+        "density_veh_per_lane_km": 31.61,
+        "mean_speed_mph": 10.41,
+        "min_bumper_headway_m": 1.929,
+        "queued_vehicles": 328,
+        "throughput_veh_per_hr": 20610.0
       },
       {
-        "active_vehicles": 412,
-        "completed_trips": 109,
+        "active_vehicles": 1187,
+        "completed_trips": 286,
         "demand_veh_per_lane_hr": 2100.0,
-        "density_veh_per_lane_km": 44.98,
-        "mean_speed_mph": 7.21,
+        "density_veh_per_lane_km": 36.46,
+        "mean_speed_mph": 9.56,
         "min_bumper_headway_m": 1.93,
-        "queued_vehicles": 175,
-        "throughput_veh_per_hr": 9810.0
+        "queued_vehicles": 411,
+        "throughput_veh_per_hr": 25740.0
       }
     ]
   },
   "t2_nfpa_1710_mclp_siting": {
     "baseline_existing_stations": 0,
-    "baseline_p90_travel_s": 46.89,
+    "baseline_p90_travel_s": 58.16,
     "baseline_parcel_cov_pct": 100.0,
     "deterministic_mclp": {
       "added_stations": 1,
-      "p90_travel_s": 46.89,
+      "p90_travel_s": 58.16,
       "parcel_cov_pct": 100.0,
       "resident_cov_pct": 100.0,
-      "solve_time_ms": 15.76,
+      "solve_time_ms": 174.34,
       "target_met": true,
       "total_stations": 1
     },
@@ -90,7 +90,7 @@
       "added_stations": 4,
       "effective_busy_prob_q": 0.5067,
       "expected_cov_pct": 81.95,
-      "p90_travel_s": 28.61,
+      "p90_travel_s": 33.9,
       "parcel_cov_pct": 100.0,
       "pareto_curve": [
         {
@@ -105,7 +105,7 @@
         {
           "busy_prob_q": 0.9,
           "expected_cov_pct": 4.0,
-          "p90_travel_s": 46.89,
+          "p90_travel_s": 58.16,
           "parcel_cov_4min_pct": 100.0,
           "second_due_backup_pct": 0.0,
           "total_apparatus": 1,
@@ -114,7 +114,7 @@
         {
           "busy_prob_q": 0.9,
           "expected_cov_pct": 5.96,
-          "p90_travel_s": 46.89,
+          "p90_travel_s": 58.16,
           "parcel_cov_4min_pct": 100.0,
           "second_due_backup_pct": 100.0,
           "total_apparatus": 2,
@@ -123,16 +123,16 @@
         {
           "busy_prob_q": 0.6756,
           "expected_cov_pct": 54.3,
-          "p90_travel_s": 38.33,
+          "p90_travel_s": 47.37,
           "parcel_cov_4min_pct": 100.0,
           "second_due_backup_pct": 100.0,
           "total_apparatus": 3,
-          "total_stations": 2
+          "total_stations": 3
         },
         {
           "busy_prob_q": 0.5067,
           "expected_cov_pct": 81.95,
-          "p90_travel_s": 28.61,
+          "p90_travel_s": 33.9,
           "parcel_cov_4min_pct": 100.0,
           "second_due_backup_pct": 100.0,
           "total_apparatus": 4,
@@ -140,7 +140,7 @@
         }
       ],
       "second_due_cov_pct": 100.0,
-      "solve_time_ms": 67.31,
+      "solve_time_ms": 675.09,
       "total_apparatus": 4,
       "total_stations": 4
     },
@@ -148,22 +148,22 @@
   },
   "t3_cascadia_m9_seismic_and_evacuation": {
     "contraflow_evacuation_ems_protected": {
-      "contraflow_lane_km_added": 0.215,
-      "contraflow_reversed_segments": 2,
+      "contraflow_lane_km_added": 5.789,
+      "contraflow_reversed_segments": 46,
       "ems_access_preserved_pct": 100.0,
       "expected_fire_overrun_residents": 0.0,
-      "peak_bottleneck_vc_ratio": 0.791,
-      "t50_clearance_min": 66.06,
-      "t90_clearance_min": 85.51
+      "peak_bottleneck_vc_ratio": 0.647,
+      "t50_clearance_min": 61.43,
+      "t90_clearance_min": 78.89
     },
     "contraflow_evacuation_no_cf": {
       "ems_access_preserved_pct": 100.0,
       "expected_fire_overrun_residents": 0.0,
-      "peak_bottleneck_vc_ratio": 0.83,
-      "t50_clearance_min": 21.24,
-      "t90_clearance_min": 39.99,
-      "total_evac_vehicles": 1499.0,
-      "total_evacuees": 2585.0
+      "peak_bottleneck_vc_ratio": 0.679,
+      "t50_clearance_min": 16.36,
+      "t90_clearance_min": 33.39,
+      "total_evac_vehicles": 2582.0,
+      "total_evacuees": 4451.0
     },
     "csv_artifact": "validation/traffic_and_evacuation_metrics.csv",
     "gmpe_mw9_attenuation": [
@@ -200,21 +200,21 @@
     ],
     "seismic_brittle_baseline": {
       "bruneau_bridge_resilience_90d_pct": 100.0,
-      "day0_sewer_breaks": 0.03,
-      "day0_water_breaks": 0.04,
-      "day0_water_leaks": 0.19,
-      "expected_closed_bridges": 4.22,
-      "mean_median_sa10_g": 0.2147,
-      "median_pgv_cm_s": 24.74,
-      "multi_lifeline_resilience_90d_pct": 97.97
+      "day0_sewer_breaks": 0.13,
+      "day0_water_breaks": 0.11,
+      "day0_water_leaks": 0.41,
+      "expected_closed_bridges": 3.76,
+      "mean_median_sa10_g": 0.2144,
+      "median_pgv_cm_s": 24.6,
+      "multi_lifeline_resilience_90d_pct": 99.57
     },
     "seismic_hardened_erdip_retrofitted": {
       "bruneau_bridge_resilience_90d_pct": 100.0,
       "day0_sewer_breaks": 0.01,
-      "day0_water_breaks": 0.0,
-      "day0_water_leaks": 0.01,
-      "expected_closed_bridges": 3.21,
-      "multi_lifeline_resilience_90d_pct": 99.18
+      "day0_water_breaks": 0.02,
+      "day0_water_leaks": 0.03,
+      "expected_closed_bridges": 2.74,
+      "multi_lifeline_resilience_90d_pct": 99.76
     }
   },
   "version": "5.2.0"

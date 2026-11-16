@@ -13,14 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://gnu.org>.
 
-//! `ALERTWest` (`https://www.alertwest.org/` / `https://alertwest.live/`) & University of Oregon
-//! `Oregon Hazards Lab (OHAZ)` (`https://ohaz.uoregon.edu/wildfire-cameras/`) AI PTZ Wildfire
-//! Camera Detection, Cross-Azimuth Triangulation, and `NWCG` / Rothermel WUI Wildfire Suppression:
+//! `ALERTWest` (`https://www.alertwest.org/` / `https://alertwest.live/`) & Western Regional Wildfire
+//! Camera Network AI PTZ Detection, Cross-Azimuth Triangulation, and `NWCG` / Rothermel WUI Wildfire Suppression:
 //! - **Native Multi-Format Camera & Ignition Feed Linker (`.json`, GeoJSON `FeatureCollection`, `.csv`)**:
-//!   Ingests `ALERTWest` and `UOregon OHAZ` (`Alert OR`) camera metadata (`360°` pan, `220°` tilt,
+//!   Ingests `ALERTWest` and regional wildfire camera metadata (`360°` pan, `220°` tilt,
 //!   up to `40x` optical zoom, `30 mi` / `48.3 km` daytime & `40 mi` / `64.4 km` near-infrared `NIR`
-//!   nighttime detection range, `2.0-min` panoramic AI scan cadence, co-located `PNSN`/`ShakeAlert`
-//!   seismic telemetry, and `< 50 lb` Starlink + Li-ion solar **Mobile Deployment Units (`MDU`s)**).
+//!   nighttime detection range, `2.0-min` panoramic AI scan cadence, co-located seismic telemetry,
+//!   and `< 50 lb` Starlink + Li-ion solar **Mobile Deployment Units (`MDU`s)**).
 //! - **Weighted Least-Squares (`WLS`) Multi-Camera Cross-Azimuth Bearing Triangulation**:
 //!   Intersects `K >= 2` optical/`NIR` camera smoke bearings `(x_k, y_k, theta_k, zoom_k)` to
 //!   pinpoint WUI ignitions `(x_hat, y_hat)` and `CEP_90` error radii (`meters`) within `2–4 min`
@@ -41,38 +40,38 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-pub const WILDFIRE_CAMERA_CSV_HEADER: &str = "camera_id,network_provider,camera_kind,lat,lon,x_m,y_m,elevation_m,azimuth_deg,optical_zoom_x,day_range_mi,nir_night_range_mi,pnsn_shakealert_colocated,detected_bearing_deg,ai_smoke_confidence,live_image_url";
+pub const WILDFIRE_CAMERA_CSV_HEADER: &str = "camera_id,network_provider,camera_kind,lat,lon,x_m,y_m,elevation_m,azimuth_deg,optical_zoom_x,day_range_mi,nir_night_range_mi,seismic_colocated,detected_bearing_deg,ai_smoke_confidence,live_image_url";
 pub const WILDFIRE_TIMELINE_CSV_HEADER: &str = "minute,active_fire_area_acres,uncontained_perimeter_ft,built_containment_line_ft,containment_pct,flame_length_ft,evacuated_wui_residents";
 
-/// Camera platform class across the `ALERTWest` & `UOregon OHAZ` (`Alert OR`) ecosystem.
+/// Camera platform class across the `ALERTWest` & Western Regional WUI Camera Network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AlertWestOhazCameraKind {
-    /// `UOregon OHAZ` mountaintop `360°` PTZ (`40x` optical zoom, `30 mi` day / `40 mi` `NIR` night,
-    /// `2-min` AI panoramic scan, often co-located with `PNSN`/`ShakeAlert` seismic sensors).
-    OhazMountaintopFixedPtz,
-    /// `ALERTWest` municipal / utility WUI lookout tower camera (`360°` PTZ, `2-min` AI scan).
-    AlertWestWuiLookoutTower,
-    /// `UOregon OHAZ` portable **Mobile Deployment Unit (`MDU`)** (`< 50 lb` per component, `2–4`
+pub enum WildfireCameraKind {
+    /// Mountaintop `360°` PTZ (`40x` optical zoom, `30 mi` day / `40 mi` `NIR` night,
+    /// `2-min` AI panoramic scan, often co-located with regional seismic telemetry sensors).
+    MountaintopFixedPtz,
+    /// Municipal / utility WUI lookout tower camera (`360°` PTZ, `2-min` AI scan).
+    WuiLookoutTower,
+    /// Portable **Mobile Deployment Unit (`MDU`)** (`< 50 lb` per component, `2–4`
     /// firefighter crew setup, Li-ion + solar power, and **Starlink** LEO satellite backhaul).
-    OhazStarlinkMobileDeploymentUnit,
+    StarlinkMobileDeploymentUnit,
 }
 
-impl AlertWestOhazCameraKind {
+impl WildfireCameraKind {
     pub fn badge(self) -> &'static str {
         match self {
-            Self::OhazMountaintopFixedPtz => "OHAZ-PTZ",
-            Self::AlertWestWuiLookoutTower => "AWEST-WUI",
-            Self::OhazStarlinkMobileDeploymentUnit => "OHAZ-MDU",
+            Self::MountaintopFixedPtz => "WUI-PTZ",
+            Self::WuiLookoutTower => "AWEST-WUI",
+            Self::StarlinkMobileDeploymentUnit => "WUI-MDU",
         }
     }
 }
 
-/// Canonical `ALERTWest` / `UOregon OHAZ` camera telemetry & smoke-bearing record.
+/// Canonical `ALERTWest` / Western Regional wildfire camera telemetry & smoke-bearing record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AlertWestOhazCameraSite {
+pub struct WildfireCameraSite {
     pub camera_id: String,
     pub network_provider: String,
-    pub kind: AlertWestOhazCameraKind,
+    pub kind: WildfireCameraKind,
     pub lat: f64,
     pub lon: f64,
     #[serde(default)]
@@ -99,20 +98,20 @@ pub struct AlertWestOhazCameraSite {
 pub enum WildfireDetectionAndAttackPosture {
     /// Legacy public `911` visual smoke calls (`18–48 min` delay) + ground engines/handcrews only.
     Legacy911GroundOnly,
-    /// Fixed `ALERTWest` + `UOregon OHAZ` mountaintop AI PTZ `2-min` scan triangulation + ground initial attack.
-    AlertWestOhazFixedPtzInitialAttack,
-    /// Full `ALERTWest` + `OHAZ` fixed PTZ + portable Starlink `MDU` blind-spot fill + `VLAT`/`LAT`
+    /// Fixed `ALERTWest` mountaintop AI PTZ `2-min` scan triangulation + ground initial attack.
+    AlertWestFixedPtzInitialAttack,
+    /// Full `ALERTWest` fixed PTZ + portable Starlink `MDU` blind-spot fill + `VLAT`/`LAT`
     /// `Phos-Chek` retardant + Helitack + Type-1 Hotshots/Dozers + `IPAWS` WUI evacuation!
-    FullAlertWestOhazMduAndAerialAttack,
+    FullAlertWestMduAndAerialAttack,
 }
 
 impl WildfireDetectionAndAttackPosture {
     pub fn short_label(self) -> &'static str {
         match self {
             Self::Legacy911GroundOnly => "Legacy 911 Call + Ground Only",
-            Self::AlertWestOhazFixedPtzInitialAttack => "ALERTWest/OHAZ 2-Min AI PTZ + Ground IA",
-            Self::FullAlertWestOhazMduAndAerialAttack => {
-                "ALERTWest/OHAZ + Starlink MDU + VLAT Retardant + IHC"
+            Self::AlertWestFixedPtzInitialAttack => "ALERTWest 2-Min AI PTZ + Ground IA",
+            Self::FullAlertWestMduAndAerialAttack => {
+                "ALERTWest + Starlink MDU + VLAT Retardant + IHC"
             }
         }
     }
@@ -200,10 +199,10 @@ pub struct WildfireAlertWestConfig {
     pub relative_humidity_pct: f64,
     /// Mean WUI topographic slope (`%`, `0..=60%`).
     pub terrain_slope_pct: f64,
-    /// Nocturnal ignition flag (switches `ALERTWest`/`OHAZ` cameras to `40-mi NIR` night mode; grounds day-only VFR tankers).
+    /// Nocturnal ignition flag (switches `ALERTWest` cameras to `40-mi NIR` night mode; grounds day-only VFR tankers).
     pub nocturnal_ignition: bool,
-    /// Number of portable `UOregon OHAZ` `< 50 lb` Starlink **Mobile Deployment Units (`MDU`s)** (`0..=4`).
-    pub ohaz_starlink_mdu_units: usize,
+    /// Number of portable `< 50 lb` Starlink **Mobile Deployment Units (`MDU`s)** (`0..=4`).
+    pub starlink_mdu_units: usize,
     /// Number of `20`-person **Type 1 Interagency Hotshot Crews (`IHC`)** (`1..=8`).
     pub type1_hotshot_crews_20pax: usize,
     /// Number of **Type 3 / Type 6 WUI Wildland Engines** (`2..=18`).
@@ -218,15 +217,15 @@ pub struct WildfireAlertWestConfig {
     pub simulation_horizon_min: usize,
     pub monte_carlo_trials: usize,
     pub random_seed: u64,
-    /// Optional external/custom `ALERTWest` / `OHAZ` camera sites loaded from `.json`/GeoJSON/`.csv`.
+    /// Optional external/custom `ALERTWest` / Western WUI camera sites loaded from `.json`/GeoJSON/`.csv`.
     #[serde(default)]
-    pub custom_camera_sites: Vec<AlertWestOhazCameraSite>,
+    pub custom_camera_sites: Vec<WildfireCameraSite>,
 }
 
 impl Default for WildfireAlertWestConfig {
     fn default() -> Self {
         Self {
-            posture: WildfireDetectionAndAttackPosture::FullAlertWestOhazMduAndAerialAttack,
+            posture: WildfireDetectionAndAttackPosture::FullAlertWestMduAndAerialAttack,
             fuel_model: WuiFuelModel::ConiferTimberUnderstoryFm10,
             wind_speed_mph: 24.0,
             wind_push_bearing_deg: 235.0, // East-northeast dry downslope wind pushing SW into WUI
@@ -234,7 +233,7 @@ impl Default for WildfireAlertWestConfig {
             relative_humidity_pct: 14.0,
             terrain_slope_pct: 22.0,
             nocturnal_ignition: false,
-            ohaz_starlink_mdu_units: 2,
+            starlink_mdu_units: 2,
             type1_hotshot_crews_20pax: 3,
             wui_wildland_engines: 8,
             wildland_bulldozers: 2,
@@ -264,7 +263,7 @@ pub struct WildfireAlertWestReport {
     pub config: WildfireAlertWestConfig,
     pub solve_time_ms: f64,
     pub fire_behavior: RothermelFireBehaviorMetrics,
-    /// `ALERTWest` & `UOregon OHAZ` Camera Detection & Cross-Azimuth Triangulation metrics
+    /// `ALERTWest` & Western Regional Camera Detection & Cross-Azimuth Triangulation metrics
     pub active_camera_count: usize,
     pub cameras_with_los_count: usize,
     pub pnsn_shakealert_colocated_count: usize,
@@ -285,7 +284,7 @@ pub struct WildfireAlertWestReport {
     pub expected_wui_structures_lost: f64,
     pub level3_go_evac_residents: f64,
     /// Spatial vectors & per-parcel GPU heatmap cache
-    pub camera_sites: Vec<AlertWestOhazCameraSite>,
+    pub camera_sites: Vec<WildfireCameraSite>,
     pub camera_bearing_rays: Vec<(Vec2, Vec2, f64)>,
     pub retardant_drop_segments: Vec<(Vec2, Vec2)>,
     pub handcrew_dozer_segments: Vec<(Vec2, Vec2)>,
@@ -355,101 +354,100 @@ impl WildfireAlertWestReport {
     }
 }
 
-/// Built-in realistic Oregon `OHAZ` (`https://ohaz.uoregon.edu/wildfire-cameras/`) &
-/// `ALERTWest` (`https://www.alertwest.org/`) camera network JSON feed for immediate offline testing
-/// and live `.json` export/import.
-pub fn builtin_oregon_ohaz_alertwest_feed_json() -> String {
+/// Built-in Western Regional & `ALERTWest` (`https://www.alertwest.org/`) camera network JSON feed
+/// for immediate offline testing and live `.json` export/import.
+pub fn builtin_western_wildfire_camera_feed_json() -> String {
     serde_json::to_string_pretty(&serde_json::json!({
-        "feed_source": "ALERTWest (https://www.alertwest.org/) & UOregon Oregon Hazards Lab OHAZ (https://ohaz.uoregon.edu/wildfire-cameras/)",
+        "feed_source": "ALERTWest & Western Regional Wildfire Camera Network",
         "scan_cadence_minutes": 2.0,
         "cameras": [
             {
-                "camera_id": "Axis-MarysPeak",
-                "network_provider": "UOregon OHAZ / Alert OR",
-                "kind": "OhazMountaintopFixedPtz",
-                "lat": 44.5044,
-                "lon": -123.5512,
-                "elevation_m": 1249.0,
-                "pan_azimuth_deg": 76.0,
+                "camera_id": "Axis-WestRidgePeak",
+                "network_provider": "ALERTWest / Western Regional WUI",
+                "kind": "MountaintopFixedPtz",
+                "lat": 39.9620,
+                "lon": -105.0520,
+                "elevation_m": 1280.0,
+                "pan_azimuth_deg": 72.0,
                 "fov_deg": 62.0,
-                "tilt_deg": -4.5,
+                "tilt_deg": -4.2,
                 "optical_zoom_x": 40.0,
                 "day_range_mi": 30.0,
                 "nir_night_range_mi": 40.0,
                 "scan_interval_min": 2.0,
-                "co_located_pnsn_shakealert": true,
-                "live_image_endpoint": "https://alertwest.live/api/firecams/v0/currentimage?name=Axis-MarysPeak",
-                "portal_url": "https://ohaz.uoregon.edu/wildfire-cameras/"
+                "co_located_seismic_sensor": true,
+                "live_image_endpoint": "https://alertwest.live/api/firecams/v0/currentimage?name=Axis-WestRidgePeak",
+                "portal_url": "https://www.alertwest.org/"
             },
             {
-                "camera_id": "Axis-McCullochPeak",
-                "network_provider": "UOregon OHAZ / Alert OR",
-                "kind": "OhazMountaintopFixedPtz",
-                "lat": 44.6148,
-                "lon": -123.3375,
-                "elevation_m": 661.0,
-                "pan_azimuth_deg": 118.0,
+                "camera_id": "Axis-NorthSummit",
+                "network_provider": "Western Wildfire Camera Lab / Alert Network",
+                "kind": "MountaintopFixedPtz",
+                "lat": 40.0480,
+                "lon": -105.0280,
+                "elevation_m": 940.0,
+                "pan_azimuth_deg": 135.0,
                 "fov_deg": 62.0,
-                "tilt_deg": -3.2,
+                "tilt_deg": -3.4,
                 "optical_zoom_x": 40.0,
                 "day_range_mi": 30.0,
                 "nir_night_range_mi": 40.0,
                 "scan_interval_min": 2.0,
-                "co_located_pnsn_shakealert": true,
-                "live_image_endpoint": "https://alertwest.live/api/firecams/v0/currentimage?name=Axis-McCullochPeak",
-                "portal_url": "https://ohaz.uoregon.edu/wildfire-cameras/"
+                "co_located_seismic_sensor": true,
+                "live_image_endpoint": "https://alertwest.live/api/firecams/v0/currentimage?name=Axis-NorthSummit",
+                "portal_url": "https://www.alertwest.org/"
             },
             {
-                "camera_id": "Axis-VineyardMtn",
-                "network_provider": "ALERTWest / ODF WUI",
-                "kind": "AlertWestWuiLookoutTower",
-                "lat": 44.6295,
-                "lon": -123.2680,
-                "elevation_m": 472.0,
-                "pan_azimuth_deg": 148.0,
+                "camera_id": "Axis-CanyonLookout",
+                "network_provider": "ALERTWest / Regional WUI",
+                "kind": "WuiLookoutTower",
+                "lat": 40.0250,
+                "lon": -104.9620,
+                "elevation_m": 540.0,
+                "pan_azimuth_deg": 212.0,
                 "fov_deg": 58.0,
                 "tilt_deg": -2.8,
                 "optical_zoom_x": 36.0,
                 "day_range_mi": 30.0,
                 "nir_night_range_mi": 40.0,
                 "scan_interval_min": 2.0,
-                "co_located_pnsn_shakealert": false,
-                "live_image_endpoint": "https://alertwest.live/api/firecams/v0/currentimage?name=Axis-VineyardMtn",
+                "co_located_seismic_sensor": false,
+                "live_image_endpoint": "https://alertwest.live/api/firecams/v0/currentimage?name=Axis-CanyonLookout",
                 "portal_url": "https://www.alertwest.org/"
             },
             {
-                "camera_id": "Axis-GrizzlyMtn",
-                "network_provider": "UOregon OHAZ / Alert OR",
-                "kind": "OhazMountaintopFixedPtz",
-                "lat": 44.4382,
-                "lon": -120.9558,
-                "elevation_m": 1718.0,
-                "pan_azimuth_deg": 248.0,
+                "camera_id": "Axis-HighlandsEast",
+                "network_provider": "Western Wildfire Camera Lab / Alert Network",
+                "kind": "MountaintopFixedPtz",
+                "lat": 39.9840,
+                "lon": -104.9250,
+                "elevation_m": 1620.0,
+                "pan_azimuth_deg": 265.0,
                 "fov_deg": 62.0,
                 "tilt_deg": -4.0,
                 "optical_zoom_x": 40.0,
                 "day_range_mi": 30.0,
                 "nir_night_range_mi": 40.0,
                 "scan_interval_min": 2.0,
-                "co_located_pnsn_shakealert": true,
-                "live_image_endpoint": "https://alertwest.live/api/firecams/v0/currentimage?name=Axis-GrizzlyMtn",
-                "portal_url": "https://ohaz.uoregon.edu/wildfire-cameras/"
+                "co_located_seismic_sensor": true,
+                "live_image_endpoint": "https://alertwest.live/api/firecams/v0/currentimage?name=Axis-HighlandsEast",
+                "portal_url": "https://www.alertwest.org/"
             },
             {
                 "camera_id": "Axis-FoothillsSouthWUI",
                 "network_provider": "ALERTWest Utility Partner",
-                "kind": "AlertWestWuiLookoutTower",
-                "lat": 44.5180,
-                "lon": -123.2240,
-                "elevation_m": 285.0,
-                "pan_azimuth_deg": 32.0,
+                "kind": "WuiLookoutTower",
+                "lat": 39.9540,
+                "lon": -104.9880,
+                "elevation_m": 385.0,
+                "pan_azimuth_deg": 28.0,
                 "fov_deg": 60.0,
                 "tilt_deg": -2.0,
                 "optical_zoom_x": 32.0,
                 "day_range_mi": 28.0,
                 "nir_night_range_mi": 36.0,
                 "scan_interval_min": 2.0,
-                "co_located_pnsn_shakealert": false,
+                "co_located_seismic_sensor": false,
                 "live_image_endpoint": "https://alertwest.live/api/firecams/v0/currentimage?name=Axis-FoothillsSouthWUI",
                 "portal_url": "https://www.alertwest.org/"
             }
@@ -461,7 +459,7 @@ pub fn builtin_oregon_ohaz_alertwest_feed_json() -> String {
 /// Projects geographic `(lat, lon)` camera coordinates onto the active simulation `BoundingBox`
 /// (preserving perimeter lookout geometry around the urban WUI grid when regional mountaintop
 /// coordinates extend beyond downtown bounds).
-pub fn project_cameras_to_bounds(cameras: &mut [AlertWestOhazCameraSite], bounds: BoundingBox) {
+pub fn project_cameras_to_bounds(cameras: &mut [WildfireCameraSite], bounds: BoundingBox) {
     if cameras.is_empty() {
         return;
     }
@@ -504,19 +502,18 @@ pub fn project_cameras_to_bounds(cameras: &mut [AlertWestOhazCameraSite], bounds
     }
 }
 
-/// Parses an `ALERTWest` (`alertwest.org`) or `UOregon OHAZ` (`ohaz.uoregon.edu/wildfire-cameras/`)
-/// camera & smoke-detection feed in **JSON** (`[...]`, `{"cameras": [...]}`), **GeoJSON**
-/// (`FeatureCollection`), or **CSV** format!
-pub fn parse_alertwest_ohaz_feed_str(
+/// Parses an `ALERTWest` (`alertwest.org`) or Western Regional wildfire camera & smoke-detection feed
+/// in **JSON** (`[...]`, `{"cameras": [...]}`), **GeoJSON** (`FeatureCollection`), or **CSV** format!
+pub fn parse_wildfire_camera_feed_str(
     raw: &str,
     bounds: BoundingBox,
-) -> Result<Vec<AlertWestOhazCameraSite>, String> {
+) -> Result<Vec<WildfireCameraSite>, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err("Empty ALERTWest/OHAZ feed content".to_string());
+        return Err("Empty ALERTWest feed content".to_string());
     }
 
-    let mut sites: Vec<AlertWestOhazCameraSite> = Vec::new();
+    let mut sites: Vec<WildfireCameraSite> = Vec::new();
     if trimmed.starts_with('{') || trimmed.starts_with('[') {
         let val: serde_json::Value =
             serde_json::from_str(trimmed).map_err(|e| format!("JSON parse error: {e}"))?;
@@ -554,7 +551,7 @@ pub fn parse_alertwest_ohaz_feed_str(
             );
         }
     } else {
-        // CSV parser (`camera_id,network_provider,kind,lat,lon,elevation_m,azimuth_deg,zoom_x,shakealert,...`)
+        // CSV parser (`camera_id,network_provider,kind,lat,lon,elevation_m,azimuth_deg,zoom_x,seismic,...`)
         for (line_no, line) in trimmed.lines().enumerate() {
             let l = line.trim();
             if l.is_empty() || l.starts_with('#') {
@@ -570,11 +567,11 @@ pub fn parse_alertwest_ohaz_feed_str(
             let cam_id = cols[0].to_string();
             let provider = cols[1].to_string();
             let kind = if cols[2].to_ascii_lowercase().contains("mdu") {
-                AlertWestOhazCameraKind::OhazStarlinkMobileDeploymentUnit
+                WildfireCameraKind::StarlinkMobileDeploymentUnit
             } else if cols[2].to_ascii_lowercase().contains("wui") {
-                AlertWestOhazCameraKind::AlertWestWuiLookoutTower
+                WildfireCameraKind::WuiLookoutTower
             } else {
-                AlertWestOhazCameraKind::OhazMountaintopFixedPtz
+                WildfireCameraKind::MountaintopFixedPtz
             };
             let lat: f64 = cols[3]
                 .parse()
@@ -597,15 +594,11 @@ pub fn parse_alertwest_ohaz_feed_str(
                 .get(10)
                 .and_then(|s| s.parse::<f64>().ok())
                 .filter(|&v| v > 0.0);
-            sites.push(AlertWestOhazCameraSite {
+            sites.push(WildfireCameraSite {
                 live_image_endpoint: format!(
                     "https://alertwest.live/api/firecams/v0/currentimage?name={cam_id}"
                 ),
-                portal_url: if provider.to_ascii_lowercase().contains("ohaz") {
-                    "https://ohaz.uoregon.edu/wildfire-cameras/".to_string()
-                } else {
-                    "https://www.alertwest.org/".to_string()
-                },
+                portal_url: "https://www.alertwest.org/".to_string(),
                 camera_id: cam_id,
                 network_provider: provider,
                 kind,
@@ -628,14 +621,14 @@ pub fn parse_alertwest_ohaz_feed_str(
     }
 
     if sites.is_empty() {
-        return Err("No camera records found in ALERTWest/OHAZ feed".to_string());
+        return Err("No camera records found in ALERTWest feed".to_string());
     }
     project_cameras_to_bounds(&mut sites, bounds);
     Ok(sites)
 }
 
-fn parse_camera_json_obj(v: &serde_json::Value) -> Result<AlertWestOhazCameraSite, String> {
-    if let Ok(direct) = serde_json::from_value::<AlertWestOhazCameraSite>(v.clone()) {
+fn parse_camera_json_obj(v: &serde_json::Value) -> Result<WildfireCameraSite, String> {
+    if let Ok(direct) = serde_json::from_value::<WildfireCameraSite>(v.clone()) {
         return Ok(direct);
     }
     let id = v
@@ -643,26 +636,26 @@ fn parse_camera_json_obj(v: &serde_json::Value) -> Result<AlertWestOhazCameraSit
         .or_else(|| v.get("id"))
         .or_else(|| v.get("name"))
         .and_then(|x| x.as_str())
-        .unwrap_or("Axis-OHAZ-Cam")
+        .unwrap_or("Axis-WUI-Cam")
         .to_string();
     let provider = v
         .get("network_provider")
         .or_else(|| v.get("provider"))
         .or_else(|| v.get("network"))
         .and_then(|x| x.as_str())
-        .unwrap_or("ALERTWest / UOregon OHAZ")
+        .unwrap_or("ALERTWest / Western WUI")
         .to_string();
     let kind_str = v
         .get("kind")
         .and_then(|x| x.as_str())
-        .unwrap_or("OhazMountaintopFixedPtz")
+        .unwrap_or("MountaintopFixedPtz")
         .to_ascii_lowercase();
     let kind = if kind_str.contains("mdu") || kind_str.contains("mobile") {
-        AlertWestOhazCameraKind::OhazStarlinkMobileDeploymentUnit
+        WildfireCameraKind::StarlinkMobileDeploymentUnit
     } else if kind_str.contains("wui") || kind_str.contains("lookout") {
-        AlertWestOhazCameraKind::AlertWestWuiLookoutTower
+        WildfireCameraKind::WuiLookoutTower
     } else {
-        AlertWestOhazCameraKind::OhazMountaintopFixedPtz
+        WildfireCameraKind::MountaintopFixedPtz
     };
     let lat = v
         .get("lat")
@@ -707,7 +700,8 @@ fn parse_camera_json_obj(v: &serde_json::Value) -> Result<AlertWestOhazCameraSit
         .and_then(|x| x.as_f64())
         .unwrap_or(2.0);
     let shake = v
-        .get("co_located_pnsn_shakealert")
+        .get("co_located_seismic_sensor")
+        .or_else(|| v.get("co_located_pnsn_shakealert"))
         .or_else(|| v.get("shakealert"))
         .and_then(|x| x.as_bool())
         .unwrap_or(true);
@@ -720,7 +714,7 @@ fn parse_camera_json_obj(v: &serde_json::Value) -> Result<AlertWestOhazCameraSit
         .get("portal_url")
         .and_then(|x| x.as_str())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| "https://ohaz.uoregon.edu/wildfire-cameras/".to_string());
+        .unwrap_or_else(|| "https://www.alertwest.org/".to_string());
     let conf = v
         .get("latest_ai_smoke_confidence")
         .or_else(|| v.get("smoke_confidence"))
@@ -730,7 +724,7 @@ fn parse_camera_json_obj(v: &serde_json::Value) -> Result<AlertWestOhazCameraSit
         .or_else(|| v.get("bearing_deg"))
         .and_then(|x| x.as_f64());
 
-    Ok(AlertWestOhazCameraSite {
+    Ok(WildfireCameraSite {
         camera_id: id,
         network_provider: provider,
         kind,
@@ -753,12 +747,12 @@ fn parse_camera_json_obj(v: &serde_json::Value) -> Result<AlertWestOhazCameraSit
     })
 }
 
-pub fn load_alertwest_ohaz_feed_path(
+pub fn load_wildfire_camera_feed_path(
     path: &Path,
     bounds: BoundingBox,
-) -> Result<Vec<AlertWestOhazCameraSite>, String> {
+) -> Result<Vec<WildfireCameraSite>, String> {
     let content = fs::read_to_string(path).map_err(|e| format!("Failed reading {:?}: {e}", path))?;
-    parse_alertwest_ohaz_feed_str(&content, bounds)
+    parse_wildfire_camera_feed_str(&content, bounds)
 }
 
 /// Solves Weighted Least-Squares (`WLS`) multi-camera cross-azimuth bearing triangulation
@@ -958,7 +952,7 @@ fn u01_from_u64(v: u64) -> f64 {
     ((v >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
 }
 
-/// Executes a `Rayon`-parallelized `ALERTWest` + `UOregon OHAZ` AI PTZ Camera Detection,
+/// Executes a `Rayon`-parallelized `ALERTWest` & Western Regional AI PTZ Camera Detection,
 /// Multi-Camera Cross-Azimuth Triangulation, and `NWCG` Interagency WUI Wildfire Suppression
 /// Monte Carlo simulation.
 pub fn run_wildfire_alertwest_monte_carlo(
@@ -972,61 +966,61 @@ pub fn run_wildfire_alertwest_monte_carlo(
     let span_x = (b.max_x - b.min_x).max(160.0);
     let span_y = (b.max_y - b.min_y).max(160.0);
 
-    // 1. Assemble Active Camera Roster (Custom loaded feed OR built-in Oregon OHAZ / ALERTWest catalog + Starlink MDUs)
+    // 1. Assemble Active Camera Roster (Custom loaded feed OR built-in ALERTWest catalog + Starlink MDUs)
     let mut cameras = if !cfg.custom_camera_sites.is_empty() {
         let mut cs = cfg.custom_camera_sites.clone();
         project_cameras_to_bounds(&mut cs, b);
         cs
     } else {
-        parse_alertwest_ohaz_feed_str(&builtin_oregon_ohaz_alertwest_feed_json(), b)
+        parse_wildfire_camera_feed_str(&builtin_western_wildfire_camera_feed_json(), b)
             .unwrap_or_default()
     };
 
-    if cfg.posture == WildfireDetectionAndAttackPosture::FullAlertWestOhazMduAndAerialAttack {
-        let mdu_n = cfg.ohaz_starlink_mdu_units.min(4);
+    if cfg.posture == WildfireDetectionAndAttackPosture::FullAlertWestMduAndAerialAttack {
+        let mdu_n = cfg.starlink_mdu_units.min(4);
         let mdu_spots = [
             (
-                "OHAZ-MDU-Starlink-1",
+                "WUI-MDU-Starlink-1",
                 Vec2 {
                     x: b.min_x + 0.84 * span_x,
                     y: b.min_y + 0.14 * span_y,
                 },
-                44.6020,
-                -123.2180,
+                40.0360,
+                -104.9580,
             ),
             (
-                "OHAZ-MDU-Starlink-2",
+                "WUI-MDU-Starlink-2",
                 Vec2 {
                     x: b.min_x + 0.91 * span_x,
                     y: b.min_y + 0.44 * span_y,
                 },
-                44.5710,
-                -123.2040,
+                40.0050,
+                -104.9440,
             ),
             (
-                "OHAZ-MDU-Starlink-3",
+                "WUI-MDU-Starlink-3",
                 Vec2 {
                     x: b.min_x + 0.64 * span_x,
                     y: b.min_y + 0.08 * span_y,
                 },
-                44.6350,
-                -123.2550,
+                40.0680,
+                -104.9920,
             ),
             (
-                "OHAZ-MDU-Starlink-4",
+                "WUI-MDU-Starlink-4",
                 Vec2 {
                     x: b.min_x + 0.14 * span_x,
                     y: b.min_y + 0.22 * span_y,
                 },
-                44.5950,
-                -123.3450,
+                40.0290,
+                -105.0820,
             ),
         ];
         for &(id, wpos, lat, lon) in mdu_spots.iter().take(mdu_n) {
-            cameras.push(AlertWestOhazCameraSite {
+            cameras.push(WildfireCameraSite {
                 camera_id: id.to_string(),
-                network_provider: "UOregon OHAZ Starlink MDU (<50 lb)".to_string(),
-                kind: AlertWestOhazCameraKind::OhazStarlinkMobileDeploymentUnit,
+                network_provider: "ALERTWest Starlink MDU (<50 lb)".to_string(),
+                kind: WildfireCameraKind::StarlinkMobileDeploymentUnit,
                 lat,
                 lon,
                 world_pos: wpos,
@@ -1042,7 +1036,7 @@ pub fn run_wildfire_alertwest_monte_carlo(
                 live_image_endpoint: format!(
                     "https://alertwest.live/api/firecams/v0/currentimage?name={id}"
                 ),
-                portal_url: "https://ohaz.uoregon.edu/wildfire-cameras/".to_string(),
+                portal_url: "https://www.alertwest.org/".to_string(),
                 latest_ai_smoke_confidence: None,
                 latest_detected_bearing_deg: None,
             });
@@ -1064,7 +1058,7 @@ pub fn run_wildfire_alertwest_monte_carlo(
         y: (city_center.y - push_dir.y * 0.34 * span_y).clamp(b.min_y + 35.0, b.max_y - 35.0),
     };
 
-    // 3. Evaluate `ALERTWest` / `UOregon OHAZ` Camera Line-of-Sight, `NIR` Night Vision & WLS Triangulation
+    // 3. Evaluate `ALERTWest` & Western WUI Camera Line-of-Sight, `NIR` Night Vision & WLS Triangulation
     let mut bearing_obs: Vec<(Vec2, f64, f64)> = Vec::new();
     let mut camera_bearing_rays: Vec<(Vec2, Vec2, f64)> = Vec::new();
     let pnsn_colocated = cameras
@@ -1080,7 +1074,7 @@ pub fn run_wildfire_alertwest_monte_carlo(
             cam.day_range_mi * 1_609.34 // 30 mi (48.3 km) optical day range!
         };
         // Simulate ridge canyon occlusion on 1 distant fixed camera unless Starlink MDUs fill blind spots
-        let terrain_clear = cam.kind == AlertWestOhazCameraKind::OhazStarlinkMobileDeploymentUnit
+        let terrain_clear = cam.kind == WildfireCameraKind::StarlinkMobileDeploymentUnit
             || idx % 4 != 3
             || dist_m < 0.55 * span_x.max(span_y);
         if cfg.posture != WildfireDetectionAndAttackPosture::Legacy911GroundOnly
@@ -1188,13 +1182,13 @@ pub fn run_wildfire_alertwest_monte_carlo(
 
             // Detection + CAD verification delay (`minutes`):
             // - Legacy 911: `19.5 min` day / `44.0 min` night (unwitnessed nocturnal WUI start!)
-            // - ALERTWest/OHAZ 2-min panoramic AI scan + human ops-center verification: `2.4–3.6 min` day or `NIR` night!
+            // - ALERTWest 2-min panoramic AI scan + human ops-center verification: `2.4–3.6 min` day or `NIR` night!
             let detect_dispatch_min = match cfg.posture {
                 WildfireDetectionAndAttackPosture::Legacy911GroundOnly => {
                     let base = if cfg.nocturnal_ignition { 43.0 } else { 19.0 };
                     base * detect_jit
                 }
-                WildfireDetectionAndAttackPosture::AlertWestOhazFixedPtzInitialAttack => {
+                WildfireDetectionAndAttackPosture::AlertWestFixedPtzInitialAttack => {
                     if cameras_los >= 2 {
                         2.8 * detect_jit
                     } else if cameras_los == 1 {
@@ -1203,7 +1197,7 @@ pub fn run_wildfire_alertwest_monte_carlo(
                         16.5 * detect_jit
                     }
                 }
-                WildfireDetectionAndAttackPosture::FullAlertWestOhazMduAndAerialAttack => {
+                WildfireDetectionAndAttackPosture::FullAlertWestMduAndAerialAttack => {
                     if cameras_los >= 2 {
                         2.1 * detect_jit
                     } else {
@@ -1215,7 +1209,7 @@ pub fn run_wildfire_alertwest_monte_carlo(
             let engine_arrival_min = detect_dispatch_min + nearest_fs_min;
             let airtanker_arrival_min = detect_dispatch_min + 16.0;
             let aerial_enabled = cfg.posture
-                == WildfireDetectionAndAttackPosture::FullAlertWestOhazMduAndAerialAttack;
+                == WildfireDetectionAndAttackPosture::FullAlertWestMduAndAerialAttack;
             // Fixed-wing VLAT/LAT require daylight VFR; Type 1 NVIS Helitack can fly night bucket drops if wind <= 38 mph
             let tanker_flyable =
                 aerial_enabled && !cfg.nocturnal_ignition && cfg.wind_speed_mph * wind_jit <= 42.0;
@@ -1445,14 +1439,14 @@ pub fn run_wildfire_alertwest_monte_carlo(
             raw_risk
         };
 
-        // Count how many ALERTWest / OHAZ cameras have unobstructed optical/NIR viewshed over parcel `p`
+        // Count how many ALERTWest / regional cameras have unobstructed optical/NIR viewshed over parcel `p`
         let vis_cams = cameras
             .iter()
             .filter(|c| p.center.dist(c.world_pos) <= c.day_range_mi * 1_609.34)
             .count();
         let viewshed_pct = ((vis_cams as f64 / 3.0) * 100.0).clamp(15.0, 100.0);
 
-        // Oregon 3-Level Evacuation Standard: Level 3 (GO! Immediate) = tier 1, Level 2 (SET) = tier 2, Level 1 (READY) = tier 3
+        // Western 3-Level Evacuation Standard: Level 3 (GO! Immediate) = tier 1, Level 2 (SET) = tier 2, Level 1 (READY) = tier 3
         let evac_lvl = if norm_ell <= 1.25 {
             level3_go_residents += p.residents();
             3u8

@@ -57,7 +57,7 @@ use crate::fema_gsb_drc_tdms::{
     run_fema_gsb_drc_tdms_monte_carlo as exec_fema_gsb_drc_tdms_mc, FemaGsbDrcTdmsConfig,
     FemaGsbDrcTdmsReport,
 };
-use crate::wildfire_alertwest_ohaz::{
+use crate::wildfire_cameras::{
     run_wildfire_alertwest_monte_carlo as exec_wildfire_alertwest_mc, WildfireAlertWestConfig,
     WildfireAlertWestReport,
 };
@@ -1979,7 +1979,7 @@ impl SimulationWorld {
         updated
     }
 
-    /// Runs `Rayon`-parallelized `ALERTWest` + `UOregon OHAZ` AI PTZ Wildfire Camera Triangulation
+    /// Runs `Rayon`-parallelized `ALERTWest` & Western Regional AI PTZ Wildfire Camera Triangulation
     /// & `NWCG` WUI Wildfire Suppression Monte Carlo, caching parcel burn risk & camera viewshed.
     pub fn run_wildfire_alertwest_mc(
         &mut self,
@@ -2001,7 +2001,7 @@ impl SimulationWorld {
     }
 
     /// Cuts an emergency WUI shaded fuelbreak (`ZoneCode::PARK`) along high-risk interface parcels,
-    /// closes active flame-impinged road segments, and applies Oregon Level 1/2/3 evacuation tiers
+    /// closes active flame-impinged road segments, and applies Western Level 1/2/3 evacuation tiers
     /// onto `self.parcels` as an atomic `Ctrl+Z` undoable command!
     pub fn apply_wui_fuelbreak_and_fire_closures_tracked(
         &mut self,
@@ -2024,7 +2024,7 @@ impl SimulationWorld {
                     p.wildfire_burn_risk_pct = risk as f32;
                 }
                 p.wildfire_camera_vis_pct = rep.parcel_camera_viewshed_pct[i] as f32;
-                // Map Oregon Level 3 (GO!) -> Stage 1, Level 2 (SET) -> Stage 2, Level 1 (READY) -> Stage 3
+                // Map Western Level 3 (GO!) -> Stage 1, Level 2 (SET) -> Stage 2, Level 1 (READY) -> Stage 3
                 p.evac_stage_tier = match rep.parcel_evac_level[i] {
                     3 => 1,
                     2 => 2,

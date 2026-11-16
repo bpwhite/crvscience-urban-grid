@@ -29,7 +29,7 @@ use crate::transit_gtfs::{PendingBusDispatch, TransitGtfsSystem};
 use crate::utilities::{
     evaluate_coupled_utility_grids, UtilityGridsConfig, UtilityGridsReport,
 };
-use crate::zoning::{generate_parcels_for_bounds, Parcel};
+use crate::zoning::{generate_parcels_for_network, Parcel};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -231,7 +231,7 @@ pub struct SimulationWorld {
 
 impl SimulationWorld {
     pub fn new(network: RoadNetwork) -> Self {
-        let parcels = generate_parcels_for_bounds(network.bounds);
+        let parcels = generate_parcels_for_network(&network);
         let watched = network
             .segments
             .iter()
@@ -550,29 +550,44 @@ impl SimulationWorld {
         }
     }
 
+    /// Seeds an initial stationary snapshot of vehicles, scheduled GTFS buses, cyclists, and
+    /// pedestrians at `sim_time_s = 0.0` without advancing the simulation clock.
+    pub fn seed_initial_traffic(&mut self, target_total: usize) {
+        self.seed_crowd_internal(target_total.max(120), false);
+    }
+
     pub fn seed_50k_megacity_crowd(&mut self, target_total: usize) {
-        let total = target_total.max(1_000);
+        self.seed_crowd_internal(target_total.max(1_000), true);
+    }
+
+    fn seed_crowd_internal(&mut self, total: usize, stress_50k: bool) {
         let target_veh = ((total as f64) * 0.46).round() as usize;
         let target_cyc = ((total as f64) * 0.20).round() as usize;
         let target_ped = total.saturating_sub(target_veh + target_cyc);
 
-        for (i, seg) in self.network.segments.iter_mut().enumerate() {
-            if i % 2 == 0 {
-                seg.has_bike_lane = true;
+        if stress_50k {
+            for (i, seg) in self.network.segments.iter_mut().enumerate() {
+                if i % 2 == 0 {
+                    seg.has_bike_lane = true;
+                }
             }
+            self.max_vehicles = (target_veh + 6_000).max(50_000);
+            self.base_demand_per_lane_hr = 780.0;
         }
 
         self.vehicles.clear();
-        self.max_vehicles = (target_veh + 6_000).max(50_000);
-        self.base_demand_per_lane_hr = 780.0;
 
-        let open_lanes: Vec<usize> = self
+        let mut open_lanes: Vec<usize> = self
             .network
             .lanes
             .iter()
             .filter(|l| !self.network.segments[l.segment_id].closed && l.length >= 14.0)
             .map(|l| l.id)
             .collect();
+        if !stress_50k && open_lanes.len() > target_veh && target_veh > 0 {
+            let stride = (open_lanes.len() / target_veh).max(1);
+            open_lanes = open_lanes.into_iter().step_by(stride).collect();
+        }
 
         if !open_lanes.is_empty() {
             let mut sorted_sinks: Vec<usize> = self.network.sinks.iter().copied().collect();

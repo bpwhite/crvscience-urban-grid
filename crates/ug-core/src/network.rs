@@ -172,6 +172,28 @@ fn normalize_angle(mut a: f64) -> f64 {
     a
 }
 
+fn segs_intersect_2d(a0: Vec2, a1: Vec2, b0: Vec2, b1: Vec2) -> bool {
+    let cross = |o: Vec2, p: Vec2, q: Vec2| -> f64 {
+        (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x)
+    };
+    let d1 = cross(a0, a1, b0);
+    let d2 = cross(a0, a1, b1);
+    let d3 = cross(b0, b1, a0);
+    let d4 = cross(b0, b1, a1);
+    (d1 * d2 < 0.0) && (d3 * d4 < 0.0)
+}
+
+fn polylines_intersect(a: &[Vec2], b: &[Vec2]) -> bool {
+    for wa in a.windows(2) {
+        for wb in b.windows(2) {
+            if segs_intersect_2d(wa[0], wa[1], wb[0], wb[1]) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Lane {
     pub id: usize,
@@ -226,6 +248,8 @@ pub struct RoadSegment {
     pub ema_speed_mps: f64,
     pub vsp_intensity: f64,
     pub lane_ids: Vec<usize>,
+    #[serde(default)]
+    pub is_bridge: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,6 +287,15 @@ pub struct BoundingBox {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaterFeature {
+    pub name: String,
+    pub kind: String,
+    pub pts: Vec<Vec2>,
+    pub half_width_m: f64,
+    pub is_polygon: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoadNetwork {
     pub projector: PlanarProjector,
     pub junctions: Vec<Junction>,
@@ -276,6 +309,10 @@ pub struct RoadNetwork {
     pub restrictions: Vec<RawTurnRestriction>,
     #[serde(default = "default_mp_allow_4phase")]
     pub mp_allow_4phase: bool,
+    #[serde(default)]
+    pub water_features: Vec<WaterFeature>,
+    #[serde(default)]
+    pub city_label: String,
     #[serde(skip)]
     pub next_hop: HashMap<(usize, usize), usize>,
 }
@@ -343,9 +380,53 @@ impl RoadNetwork {
             }
         }
         let proj = PlanarProjector::from_centroid(
-            if cnt > 0 { sum_lat / cnt as f64 } else { 44.5653 },
-            if cnt > 0 { sum_lon / cnt as f64 } else { -123.2622 },
+            if cnt > 0 { sum_lat / cnt as f64 } else { 40.0000 },
+            if cnt > 0 { sum_lon / cnt as f64 } else { -105.0000 },
         );
+
+        let water_features: Vec<WaterFeature> = osm
+            .waterways
+            .iter()
+            .filter_map(|w| {
+                let pts: Vec<Vec2> = w
+                    .node_refs
+                    .iter()
+                    .filter_map(|nid| osm.nodes.get(nid))
+                    .map(|n| {
+                        let (x, y) = proj.project(n.lat, n.lon);
+                        Vec2 { x, y }
+                    })
+                    .collect();
+                if pts.len() < 2 {
+                    return None;
+                }
+                let kind = w
+                    .tags
+                    .get("waterway")
+                    .or_else(|| w.tags.get("natural"))
+                    .cloned()
+                    .unwrap_or_else(|| "water".to_string());
+                let is_polygon = w.tags.get("area").map(|s| s == "yes").unwrap_or(false)
+                    || matches!(kind.as_str(), "bay");
+                let width_m = w
+                    .tags
+                    .get("width")
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(if is_polygon { 100.0 } else { 40.0 });
+                let name = w
+                    .tags
+                    .get("name")
+                    .cloned()
+                    .unwrap_or_else(|| "Waterway".to_string());
+                Some(WaterFeature {
+                    name,
+                    kind,
+                    pts,
+                    half_width_m: (width_m * 0.5).max(8.0),
+                    is_polygon,
+                })
+            })
+            .collect();
 
         let mut junc_by_osm: HashMap<String, usize> = HashMap::new();
         let mut junctions: Vec<Junction> = Vec::new();
@@ -469,12 +550,40 @@ impl RoadNetwork {
                                 .get("name")
                                 .cloned()
                                 .unwrap_or_else(|| format!("{hwy} #{}", w.id));
+                            let tagged_bridge = w
+                                .tags
+                                .get("bridge")
+                                .map(|v| matches!(v.as_str(), "yes" | "viaduct" | "true"))
+                                .unwrap_or(false);
+                            let tagged_busway = w
+                                .tags
+                                .get("busway")
+                                .map(|v| v == "lane" || v == "yes")
+                                .unwrap_or(false)
+                                || w.tags
+                                    .get("bus:lanes")
+                                    .map(|v| !v.is_empty())
+                                    .unwrap_or(false);
+                            let crosses_water = !tagged_bridge
+                                && water_features.iter().any(|wf| {
+                                    !wf.is_polygon && polylines_intersect(&pts_fwd, &wf.pts)
+                                });
+                            let seg_is_bridge = tagged_bridge || crosses_water;
+                            let tagged_bike = w
+                                .tags
+                                .get("cycleway")
+                                .map(|v| v == "lane" || v == "track")
+                                .unwrap_or(false);
 
                             let mut push_seg =
                                 |from_j: usize, to_j: usize, pts: Vec<Vec2>, lc: usize, centered: bool| {
                                     let sid = segments.len();
-                                    let has_bike = matches!(hwy.as_str(), "secondary" | "tertiary");
-                                    let has_bus = hwy == "trunk" && lc >= 3 && (w.id == "2001" || w.id.starts_with("200"));
+                                    let has_bike =
+                                        tagged_bike || matches!(hwy.as_str(), "secondary" | "tertiary");
+                                    let has_bus = tagged_busway
+                                        || (hwy == "trunk"
+                                            && lc >= 3
+                                            && (w.id == "2001" || w.id.starts_with("200")));
                                     let base_cum_s = build_cumulative_lengths(&pts);
                                     segments.push(RoadSegment {
                                         id: sid,
@@ -500,6 +609,7 @@ impl RoadNetwork {
                                         ema_speed_mps: mph * 0.447_04,
                                         vsp_intensity: 0.1,
                                         lane_ids: Vec::new(),
+                                        is_bridge: seg_is_bridge,
                                     });
                                     junctions[from_j].out_segs.push(sid);
                                     junctions[to_j].in_segs.push(sid);
@@ -538,6 +648,18 @@ impl RoadNetwork {
             }
         }
 
+        let city_label = osm
+            .city_name
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| {
+                if !water_features.is_empty() {
+                    "Waterfront Metro".to_string()
+                } else {
+                    "Custom Street Network".to_string()
+                }
+            });
+
         let mut net = Self {
             projector: proj,
             junctions,
@@ -554,6 +676,8 @@ impl RoadNetwork {
             },
             restrictions: osm.restrictions.clone(),
             mp_allow_4phase: true,
+            water_features,
+            city_label,
             next_hop: HashMap::new(),
         };
         net.rebuild_topology_from_segments(false);

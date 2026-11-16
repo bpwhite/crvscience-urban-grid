@@ -517,11 +517,9 @@ pub fn plan_contraflow_and_protected_ems_corridors(
                         } else if in_lanes >= 2 {
                             cf_added[s.id] = in_lanes - 1;
                             rem_inbound[in_sid] = 1;
-                        } else if s.lane_count >= 1 && in_lanes == 1 {
-                            // Parallel non-EMS arterial can donate 1 lane while preserving twin EMS spine
-                            cf_added[s.id] = 1;
-                            rem_inbound[in_sid] = 0;
                         }
+                        // Never reverse single-lane (`in_lanes == 1`) roads under EMS-Protected policy:
+                        // doing so leaves `rem_inbound == 0` and severs two-way egress/EMS continuity.
                     }
                 }
             }
@@ -1084,22 +1082,18 @@ pub fn run_evacuation_contraflow_monte_carlo(
                 let stg = match cfg.staging_strategy {
                     EvacuationStagingStrategy::SimultaneousUnstaged => 1,
                     EvacuationStagingStrategy::FireProximityThreeStage => {
-                        let s2_min_bt = cfg.stage2_release_delay_min.clamp(5.0, 90.0) + 110.0;
-                        let s3_min_bt = cfg.stage3_release_delay_min.clamp(10.0, 140.0) + 125.0;
-                        if bt <= s2_min_bt || vis60 < 1.35 {
+                        if bt.is_finite() || vis60 < 1.9 {
                             1
-                        } else if bt <= s3_min_bt || vis60 < 2.6 {
+                        } else if vis60 < 2.9 {
                             2
                         } else {
                             3
                         }
                     }
                     EvacuationStagingStrategy::VulnerabilityAndFireWeighted => {
-                        let s2_min_bt = cfg.stage2_release_delay_min.clamp(5.0, 90.0) + 115.0;
-                        let s3_min_bt = cfg.stage3_release_delay_min.clamp(10.0, 140.0) + 135.0;
-                        if bt <= s2_min_bt || (high_vuln && (bt <= s3_min_bt || vis60 < 2.2)) {
+                        if bt.is_finite() || (high_vuln && vis60 < 2.4) {
                             1
-                        } else if bt <= s3_min_bt || high_vuln || vis60 < 3.2 {
+                        } else if high_vuln || vis60 < 3.4 {
                             2
                         } else {
                             3
@@ -1125,9 +1119,10 @@ pub fn run_evacuation_contraflow_monte_carlo(
             let mut wave_therm_closed = vec![0.0; n_waves];
 
             let mut parcel_cleared_vehs = vec![0.0; n_parcels];
+            let mut parcel_prev_frac = vec![0.0; n_parcels];
             let mut parcel_clear_min = vec![180.0; n_parcels];
             let mut parcel_done = vec![false; n_parcels];
-            let mut cumul_cleared_vehs = 0.0;
+            let mut parcel_trip_vc = vec![0.0f64; n_parcels];
             let mut peak_vc_global = 0.0f64;
 
             for wi in 0..n_waves {
@@ -1220,8 +1215,27 @@ pub fn run_evacuation_contraflow_monte_carlo(
                         continue;
                     }
 
-                    // Propagate departing vehicles up to 8 hops along their outbound shortest-path chain
-                    let mut cur = parcel_near_seg[pi];
+                    // Propagate departing vehicles up to 8 hops along their outbound shortest-path chain,
+                    // entering whichever side of the adjacent street (`b_sid` or its twin) offers faster/higher-capacity egress.
+                    let entry_sid = {
+                        let base = parcel_near_seg[pi];
+                        if let Some(tw) = twin_seg[base] {
+                            let d_base = dist_to_shelter_s[base];
+                            let d_tw = dist_to_shelter_s[tw];
+                            if seg_open[tw]
+                                && (!seg_open[base]
+                                    || d_tw + 1.0 < d_base
+                                    || ((d_tw - d_base).abs() <= 1.0 && seg_cap_w[tw] > seg_cap_w[base]))
+                            {
+                                tw
+                            } else {
+                                base
+                            }
+                        } else {
+                            base
+                        }
+                    };
+                    let mut cur = entry_sid;
                     let mut hops = 0usize;
                     while hops < 8 {
                         seg_demand[cur] += dep_vehs;
@@ -1238,7 +1252,7 @@ pub fn run_evacuation_contraflow_monte_carlo(
                 }
 
                 // Update segment BPR V/C & residual queues, and compute network clearance throughput
-                let mut max_wave_vc = 0.0f64;
+                let mut seg_wave_vc = vec![0.0f64; n_segs];
                 let mut tot_q_rem = 0.0;
                 for sid in 0..n_segs {
                     if !seg_open[sid] {
@@ -1246,11 +1260,9 @@ pub fn run_evacuation_contraflow_monte_carlo(
                     }
                     let tot_load = seg_queue_vehs[sid] + seg_demand[sid];
                     let vc = tot_load / seg_cap_w[sid].max(1.0);
+                    seg_wave_vc[sid] = vc;
                     if vc > seg_peak_vc[sid] {
                         seg_peak_vc[sid] = vc;
-                    }
-                    if vc > max_wave_vc {
-                        max_wave_vc = vc;
                     }
                     if vc > peak_vc_global {
                         peak_vc_global = vc;
@@ -1260,30 +1272,68 @@ pub fn run_evacuation_contraflow_monte_carlo(
                     tot_q_rem += seg_queue_vehs[sid];
                 }
 
-                // Update parcel-level effective clearance progress accounting for downstream bottleneck delay
-                let net_cong_delay_min = if max_wave_vc > 0.55 {
-                    ((max_wave_vc - 0.55).powf(1.35)) * 18.0
-                } else {
-                    0.0
-                };
-                cumul_cleared_vehs = 0.0;
+                // Update parcel-level effective clearance progress using exit-path congestion experienced after release
+                let mut cumul_cleared_vehs = 0.0;
                 for pi in 0..n_parcels {
                     let rel = parcel_rel_min[pi];
-                    let sid = parcel_near_seg[pi];
-                    let route_min = if dist_to_shelter_s[sid].is_finite() {
-                        dist_to_shelter_s[sid] / 60.0
+                    let base = parcel_near_seg[pi];
+                    let best_entry = if let Some(tw) = twin_seg[base] {
+                        let d_base = dist_to_shelter_s[base];
+                        let d_tw = dist_to_shelter_s[tw];
+                        if seg_open[tw]
+                            && (!seg_open[base]
+                                || d_tw + 1.0 < d_base
+                                || ((d_tw - d_base).abs() <= 1.0 && seg_cap_w[tw] > seg_cap_w[base]))
+                        {
+                            tw
+                        } else {
+                            base
+                        }
+                    } else {
+                        base
+                    };
+                    let best_d = dist_to_shelter_s[best_entry];
+                    let route_min = if best_d.is_finite() {
+                        best_d / 60.0
                     } else {
                         38.0 // surface detour when primary road thermally severed
                     };
-                    let eff_elapsed = ((wi as f64 + 1.0) * dt_min - rel - route_min - net_cong_delay_min)
-                        .max(0.0);
+                    let w_end = (wi as f64 + 1.0) * dt_min;
+                    if w_end > rel && !parcel_done[pi] {
+                        let mut cur = best_entry;
+                        let mut path_vc = seg_wave_vc[cur];
+                        for _ in 0..8 {
+                            path_vc = path_vc.max(seg_wave_vc[cur]);
+                            if shelter_set.contains(&cur) {
+                                break;
+                            }
+                            if let Some(nxt) = next_out_seg[cur] {
+                                cur = nxt;
+                            } else {
+                                break;
+                            }
+                        }
+                        if (wi as f64) * dt_min <= rel + 30.0 {
+                            parcel_trip_vc[pi] = parcel_trip_vc[pi].max(path_vc);
+                        }
+                    }
+                    let local_cong_delay_min = if parcel_trip_vc[pi] > 0.55 {
+                        ((parcel_trip_vc[pi] - 0.55).powf(1.35)) * 18.0
+                    } else {
+                        0.0
+                    };
+                    let eff_elapsed = (w_end - rel - route_min - local_cong_delay_min).max(0.0);
                     let cleared_frac = (1.0 - (-(eff_elapsed / 18.0).powi(2)).exp()).clamp(0.0, 1.0);
                     parcel_cleared_vehs[pi] = parcel_vehs[pi] * cleared_frac;
                     cumul_cleared_vehs += parcel_cleared_vehs[pi];
                     if !parcel_done[pi] && cleared_frac >= 0.90 {
                         parcel_done[pi] = true;
-                        parcel_clear_min[pi] = (wi as f64 + 1.0) * dt_min;
+                        let prev = parcel_prev_frac[pi];
+                        let prev_t = (wi as f64) * dt_min;
+                        let sub = ((0.90 - prev) / (cleared_frac - prev).max(1e-6)).clamp(0.0, 1.0);
+                        parcel_clear_min[pi] = prev_t + sub * dt_min;
                     }
+                    parcel_prev_frac[pi] = cleared_frac;
                 }
 
                 wave_evac_pct[wi] = ((cumul_cleared_vehs / total_evac_vehs.max(1.0)) * 100.0)

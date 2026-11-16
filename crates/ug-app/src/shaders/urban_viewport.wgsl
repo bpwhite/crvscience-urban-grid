@@ -112,6 +112,7 @@ struct RoadVarying {
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) style_kind: u32,
     @location(3) seg_len_m: f32,
+    @location(4) @interpolate(flat) aux_param: f32,
 };
 
 @vertex
@@ -124,7 +125,16 @@ fn vs_road(@builtin(vertex_index) vid: u32, inst: RoadInstanceIn) -> RoadVarying
 
     let min_hw = 0.75 / max(cam.zoom_px_per_m, 0.15);
     let hw = max(inst.half_width_m, min_hw);
-    let end_cap = select(0.18, 0.38, inst.style_kind == 4u || inst.style_kind == 7u);
+    var end_cap = 0.18;
+    if (inst.style_kind == 4u || inst.style_kind == 7u) {
+        end_cap = 0.38;
+    } else if (inst.style_kind == 10u) {
+        if (inst.aux_param >= 0.5 && inst.aux_param < 1.5) {
+            end_cap = 0.0;
+        } else if (inst.aux_param < 0.5) {
+            end_cap = 1.4;
+        }
+    }
 
     let along_t = corner.x * 0.5 + 0.5;
     let world_pos = mix(inst.p0 - fwd * end_cap, inst.p1 + fwd * end_cap, along_t) + right * (corner.y * hw);
@@ -135,6 +145,7 @@ fn vs_road(@builtin(vertex_index) vid: u32, inst: RoadInstanceIn) -> RoadVarying
     out.color = inst.color;
     out.style_kind = inst.style_kind;
     out.seg_len_m = seg_len;
+    out.aux_param = inst.aux_param;
     return out;
 }
 
@@ -198,6 +209,35 @@ fn fs_road(in: RoadVarying) -> @location(0) vec4<f32> {
             rgb = mix(rgb, vec3<f32>(1.0, 0.92, 0.72), max(bay_bars * 0.82, border * 0.88));
         }
         alpha = 0.96;
+    } else if (in.style_kind == 10u) {
+        // River / Canal / Harbor Bay water rendering
+        let flow = 0.5 + 0.5 * sin(in.local_uv.x * 0.08 - cam.sim_time_s * 1.15);
+        if (in.aux_param >= 0.5 && in.aux_param < 1.5) {
+            // Bay polygon interior slab: seamless deep marine water
+            rgb = mix(rgb, vec3<f32>(0.08, 0.34, 0.58), flow * 0.14);
+            alpha = in.color.a;
+        } else if (in.aux_param >= 1.5) {
+            // Coastal shallow shoreline contour
+            let shore = 1.0 - smoothstep(0.35, 0.98, abs(in.local_uv.y));
+            rgb = mix(vec3<f32>(0.12, 0.44, 0.68), vec3<f32>(0.24, 0.62, 0.84), shore * 0.55);
+            alpha = in.color.a * shore;
+        } else {
+            // River / Creek / Canal channel with deep center and sunlit shallow bank rim
+            let bank = smoothstep(0.62, 0.96, abs(in.local_uv.y));
+            let deep = vec3<f32>(0.04, 0.24, 0.48);
+            let shallow = vec3<f32>(0.14, 0.48, 0.74);
+            rgb = mix(deep, shallow, bank * 0.72 + flow * 0.10);
+            alpha = in.color.a * (1.0 - smoothstep(0.88, 1.0, abs(in.local_uv.y)));
+        }
+    } else if (in.style_kind == 11u) {
+        // Bridge deck with concrete/steel side parapets and end abutments
+        let parapet = smoothstep(0.76, 0.91, abs(in.local_uv.y));
+        let outer_shadow = smoothstep(0.92, 1.0, abs(in.local_uv.y));
+        let abutment = 1.0 - smoothstep(0.0, 4.0, min(in.local_uv.x, in.seg_len_m - in.local_uv.x));
+        rgb = mix(rgb, vec3<f32>(0.90, 0.94, 0.99), parapet * 0.88);
+        rgb = mix(rgb, vec3<f32>(0.68, 0.76, 0.86), abutment * 0.45);
+        rgb = mix(rgb, vec3<f32>(0.08, 0.12, 0.20), outer_shadow * 0.75);
+        alpha = in.color.a * (1.0 - smoothstep(0.94, 1.0, abs(in.local_uv.y)));
     }
 
     return vec4<f32>(rgb, alpha);

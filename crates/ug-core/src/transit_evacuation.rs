@@ -777,7 +777,7 @@ fn plan_bus_ems_contraflow_topology(
                         remaining_auto[opp.id] = (opp.lane_count - 1).max(1);
                     }
                 } else if seg.lane_count >= 3 && seg.speed_mph >= 25.0 {
-                    // One-way multi-lane couplet (e.g. Corvallis 3rd/4th St): dedicate 1 lane as Bus+EMS!
+                    // One-way multi-lane couplet (e.g. downtown trunk couplets): dedicate 1 lane as Bus+EMS!
                     bus_ems_lane[seg.id] = true;
                     remaining_auto[seg.id] = (seg.lane_count - 1).max(1);
                 }

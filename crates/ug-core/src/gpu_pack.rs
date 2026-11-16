@@ -53,6 +53,8 @@ pub const ROAD_STYLE_BUS_STOP: u32 = 6;
 pub const ROAD_STYLE_EVP_PREEMPT: u32 = 7;
 pub const ROAD_STYLE_FIRE_STATION: u32 = 8;
 pub const ROAD_STYLE_HOSPITAL: u32 = 9;
+pub const ROAD_STYLE_WATER_CHANNEL: u32 = 10;
+pub const ROAD_STYLE_BRIDGE_SPAN: u32 = 11;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HeatmapLayer {
@@ -361,11 +363,77 @@ pub fn pack_agents_into(
         });
 }
 
-/// Packs road lane segments, dedicated red BRT lanes, emerald bike lanes, sidewalks, and live
-/// red/yellow/green signal stop-bars into `out` for single-pass instanced rendering.
+/// Packs water channels/bays, bridge spans with parapets, road lane segments, dedicated red BRT lanes,
+/// emerald bike lanes, sidewalks, and live red/yellow/green signal stop-bars into `out` for single-pass instanced rendering.
 pub fn pack_road_quads_into(world: &SimulationWorld, out: &mut Vec<GpuRoadQuadInstance>) {
     out.clear();
     let net = &world.network;
+
+    // Pack waterways & coastal bays FIRST so bridges and waterfront boulevards layer cleanly atop water.
+    for wf in &net.water_features {
+        if wf.is_polygon && wf.pts.len() >= 3 {
+            let mut min_y = f64::INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+            for p in &wf.pts {
+                min_y = min_y.min(p.y);
+                max_y = max_y.max(p.y);
+            }
+            let step_y = 9.0_f64;
+            let mut y = min_y + step_y * 0.5;
+            while y < max_y {
+                let mut xs = Vec::new();
+                for i in 0..wf.pts.len() {
+                    let a = wf.pts[i];
+                    let b = wf.pts[(i + 1) % wf.pts.len()];
+                    if (a.y > y) != (b.y > y) {
+                        let x_hit = a.x + (y - a.y) * (b.x - a.x) / (b.y - a.y);
+                        xs.push(x_hit);
+                    }
+                }
+                xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                for pair in xs.chunks_exact(2) {
+                    if pair[1] - pair[0] >= 1.5 {
+                        out.push(GpuRoadQuadInstance {
+                            p0: [pair[0] as f32, y as f32],
+                            p1: [pair[1] as f32, y as f32],
+                            half_width_m: 5.4,
+                            style_kind: ROAD_STYLE_WATER_CHANNEL,
+                            rgba: [10, 58, 118, 245],
+                            aux_param: 1.0,
+                        });
+                    }
+                }
+                y += step_y;
+            }
+            for i in 0..wf.pts.len() {
+                let a = wf.pts[i];
+                let b = wf.pts[(i + 1) % wf.pts.len()];
+                if a.dist(b) >= 1.0 {
+                    out.push(GpuRoadQuadInstance {
+                        p0: [a.x as f32, a.y as f32],
+                        p1: [b.x as f32, b.y as f32],
+                        half_width_m: 4.5,
+                        style_kind: ROAD_STYLE_WATER_CHANNEL,
+                        rgba: [26, 102, 166, 232],
+                        aux_param: 2.0,
+                    });
+                }
+            }
+        } else {
+            for w in wf.pts.windows(2) {
+                if w[0].dist(w[1]) >= 0.5 {
+                    out.push(GpuRoadQuadInstance {
+                        p0: [w[0].x as f32, w[0].y as f32],
+                        p1: [w[1].x as f32, w[1].y as f32],
+                        half_width_m: wf.half_width_m as f32,
+                        style_kind: ROAD_STYLE_WATER_CHANNEL,
+                        rgba: [14, 76, 146, 242],
+                        aux_param: 0.0,
+                    });
+                }
+            }
+        }
+    }
 
     for seg in &net.segments {
         // Sidewalk ribbons on outer curb
@@ -374,6 +442,21 @@ pub fn pack_road_quads_into(world: &SimulationWorld, out: &mut Vec<GpuRoadQuadIn
         } else {
             (seg.lane_count as f64) * LANE_WIDTH_M + 2.9
         };
+        if seg.is_bridge && (seg.is_oneway || seg.from_junc < seg.to_junc) {
+            let bridge_hw = (curb_off + 2.4) as f32;
+            for w in seg.base_pts.windows(2) {
+                if w[0].dist(w[1]) >= 0.5 {
+                    out.push(GpuRoadQuadInstance {
+                        p0: [w[0].x as f32, w[0].y as f32],
+                        p1: [w[1].x as f32, w[1].y as f32],
+                        half_width_m: bridge_hw,
+                        style_kind: ROAD_STYLE_BRIDGE_SPAN,
+                        rgba: [84, 98, 122, 250],
+                        aux_param: 1.0,
+                    });
+                }
+            }
+        }
         for w in seg.base_pts.windows(2) {
             let dx = w[1].x - w[0].x;
             let dy = w[1].y - w[0].y;
@@ -1893,7 +1976,7 @@ pub fn build_heatmap_rgba(
             );
             for (i, &val) in arena.heatmap_field_c.iter().enumerate() {
                 let t = val.clamp(0.0, 1.0);
-                // ALERTWest / OHAZ WUI Wildfire Palette: Clear Viewshed Forest-Teal (`0.0`) -> Ember / Level-2 SET Amber (`0.48`) -> Active Crown Flame / Level-3 GO Scarlet (`1.0`)
+                // ALERTWest WUI Wildfire Palette: Clear Viewshed Forest-Teal (`0.0`) -> Ember / Level-2 SET Amber (`0.48`) -> Active Crown Flame / Level-3 GO Scarlet (`1.0`)
                 let rgba = if t < 0.45 {
                     let u = t / 0.45;
                     [

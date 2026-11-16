@@ -7,7 +7,7 @@
 ## Workspace Architecture
 
 - **`crates/ug-core`** — Pure-Rust deterministic simulation, transit, urban systems, and GPU buffer-packing library:
-  - `osm.rs` — Streaming [OpenStreetMap](https://wiki.openstreetmap.org/wiki/Key:highway) `.osm` v0.6 XML parser ([`quick-xml`](https://github.com/tafia/quick-xml)), optional `.osm.pbf` binary reader ([`osmpbf`](https://github.com/b-r-u/osmpbf)), optional [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) client, equirectangular WGS84-to-meter projection, and four built-in `.osm` networks (including Downtown [Corvallis, Oregon](https://en.wikivoyage.org/wiki/Corvallis_(Oregon)) couplets anchored on the [Benton County Courthouse](https://en.wikipedia.org/wiki/National_Register_of_Historic_Places_listings_in_Benton_County,_Oregon) and a 144-intersection `Megacity50k` supergrid).
+  - `osm.rs` — Streaming [OpenStreetMap](https://wiki.openstreetmap.org/wiki/Key:highway) `.osm` v0.6 XML parser ([`quick-xml`](https://github.com/tafia/quick-xml)), optional `.osm.pbf` binary reader ([`osmpbf`](https://github.com/b-r-u/osmpbf)), optional [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) client, equirectangular WGS84-to-meter projection, waterway & bridge span extraction, and **5 distinct built-in city morphologies** (`Riverfront Bridges Metro`, `Harbor Bay & Peninsula`, `Radial Ring & Star Plazas`, `Foothill Canyon WUI`, and `Hierarchical Multimodal Metropolis`, plus compact `Roundabout` and `Braess` micro-labs).
   - `network.rs` — Node-degree topological splitter, 3.5 m lane polyline offsetter with `O(log K)` binary-searched cumulative arc-length tables, Complete Streets (`has_bus_lane` + `has_bike_lane`), cubic Bezier intersection turn splines, [OSM `type=restriction`](https://wiki.openstreetmap.org/wiki/Relation:restriction) enforcement, 2-phase/4-phase/roundabout signal controllers, and reverse-Dijkstra dynamic routing.
   - `zoning.rs` — Parcel land-use zoning (`R1`, `R3`, `MU4`, `CBD`, `IND`, `PARK`) and [Wilson (1967)](https://www.semanticscholar.org/paper/A-statistical-theory-of-spatial-distribution-models-Wilson/2f8308996a9bf467ad7548fcdd357504938c2ad6) doubly-constrained Iterative Proportional Fitting (`IPF`) Gravity Origin-Destination solver.
   - `network_edit.rs` — Live agent-preserving CAD street editor supporting interactive two-click road drawing (with junction snapping and automatic mid-block T-intersection splitting), [NACTO](https://nacto.org/publication/urban-street-design-guide/street-design-elements/lane-width/) lane widening and road-diet reallocation (`1..=5` lanes/dir), and [FHWA](https://highways.dot.gov/safety/data-analysis-tools/rsdp/rsdp-tools/roundabouts-informational-guide-second-edition) multi-lane modern roundabout conversion.
@@ -34,27 +34,27 @@
 # 1. Run unit, GTFS dwell/crowding, WGSL Pod byte-alignment, and 50,000+ crowd tests
 cargo test --workspace --release
 
-# 2. Launch 120+ FPS wgpu WGSL Workbench in 52,000-Agent Megacity Stress Mode (default)
+# 2. Launch 120+ FPS wgpu WGSL Workbench (opens cleanly onto Main Entrance Hub, paused at t=0.0s)
 cargo run --release
 
-# 3. Launch Downtown Corvallis Couplets with the bundled Corvallis GTFS feed fixture
-cargo run --release -- gui --scenario corvallis --gtfs assets/corvallis_gtfs --max-pressure
+# 3. Launch Riverfront Bridges Metro with the bundled GTFS transit feed fixture
+cargo run --release -- gui --scenario riverfront-bridges --gtfs assets/metro_gtfs --max-pressure
 
 # 4. Compare Front-Door Cash Baseline vs. 15-Min TOD + All-Door BRT and export 1 Hz CSV trajectories
-cargo run --release -- compare --scenario corvallis --gtfs assets/corvallis_gtfs --seconds 300 --csv-baseline exports/base.csv --csv-tod exports/tod.csv
+cargo run --release -- compare --scenario riverfront-bridges --gtfs assets/metro_gtfs --seconds 300 --csv-baseline exports/base.csv --csv-tod exports/tod.csv
 
 # 5. Parallel Rayon multi-regime experiment (Fixed-Time vs. Max-Pressure vs. Modern Roundabout) -> CSV scorecard
-cargo run --release -- batch --scenario corvallis --gtfs assets/corvallis_gtfs --seconds 180 --demand-scales 0.75,1.0,1.35 --replicates 2 --csv-out exports/corvallis_scorecard.csv
+cargo run --release -- batch --scenario harbor-peninsula --gtfs assets/metro_gtfs --seconds 180 --demand-scales 0.75,1.0,1.35 --replicates 2 --csv-out exports/harbor_scorecard.csv
 
 # 6. Headless single run saving both a reusable .json ScenarioSnapshot and a .csv telemetry log
-cargo run --release -- simulate --scenario corvallis --tod-upzone --seconds 180 --save-snapshot exports/corvallis_tod.json --csv-out exports/corvallis_tod.csv
+cargo run --release -- simulate --scenario riverfront-bridges --tod-upzone --seconds 180 --save-snapshot exports/riverfront_tod.json --csv-out exports/riverfront_tod.csv
 ```
 
 ## v4.3.0 — Arterial Bridge/Corridor Closure Stress-Test & Disruption-Hardened MCLP
 
 - **`ug_core::resilience` (`N-1` & `N-2` Interdiction Sweep)**: Parallel `Rayon` evaluation of single-corridor (`N-1`) and simultaneous two-corridor (`N-2`) bridge/arterial closures grounded in [Church, Scaparra & Middleton (2004)](https://www.tandfonline.com/doi/abs/10.1111/j.1467-8306.2004.00410.x) and the [Scott et al. (2006) Network Robustness Index (`NRI`)](https://www.researchgate.net/publication/222652140_Network_Robustness_Index_A_new_method_for_identifying_critical_links_and_evaluating_the_performance_of_transportation_networks).
 - **Disruption-Hardened MCLP (`solve_robust_mclp_under_disruptions`)**: Re-solves [NFPA 1710 4-minute (`240 s`)](https://apps.usfa.fema.gov/pdf/efop/efo49426.pdf) station siting across the ensemble of intact + worst-case disrupted graphs ([Church & Scaparra fortification](https://kar.kent.ac.uk/25492/1/79_Web_version.pdf)), undoable via `Ctrl+Z` / `Ctrl+Y`.
-- **Interactive Viewport & CLI**: Tool `7: Bridge/Road Closure`, Inspector Dock `"Stress-Test"` tab with ranked vulnerability bar chart and 1-click live closure injection, plus `cargo run --release -- stress-test --scenario megacity50k --harden-mclp --csv-out exports/stress.csv`.
+- **Interactive Viewport & CLI**: Tool `7: Bridge/Road Closure`, Inspector Dock `"Stress-Test"` tab with ranked vulnerability bar chart and 1-click live closure injection, plus `cargo run --release -- stress-test --scenario metropolis50k --harden-mclp --csv-out exports/stress.csv`.
 
 ## v4.3.0 — Probabilistic Seismic Bridge Fragility Curves & Monte Carlo Post-Event Travel-Time Simulations
 
@@ -182,35 +182,35 @@ cargo run --release -- simulate --scenario corvallis --tod-upzone --seconds 180 
 - **Dedicated Main Entrance Menu Hub (`GuiScreen::MainEntranceHub` in `crates/ug-app/src/gui.rs`)**: Opens cleanly onto a structured architectural Entrance Hub featuring **4 Built-In Benchmark Scenario Cards + Snapshot `.json` Loader**, a **Live Simulation World Telemetry Banner**, and a searchable **5-Domain, 20-Module Directory** (1. *Traffic, Street CAD & Multimodal Transit*; 2. *Emergency Districting & Utility Grids*; 3. *Seismic Fragility, FFE & Medical Surge*; 4. *Evacuation, Clean-Air Shelters & VRP Sustainment*; 5. *FEMA ESF-2 Communications, ISB/POD Logistics & Type-1 US&R*) that configures the exact `DockTab`, `StressSubMode`, `ViewportTool`, and `HeatmapLayer` in one click!
 - **Decluttered Workbench Header, Collapsible CAD Bar, 4-Category Resilience Filter & `Ctrl+K` Palette**: Toggle effortlessly between `[Home Menu (F1)]` and the `120+ FPS` `wgpu` map workbench (`F1` / `Home`), filter any of the 20+ modules or scenarios from anywhere via **`Ctrl+K`**, collapse the CAD bar when inspecting resilience runs, and browse `DockTab::ResilienceStress` cleanly via 4 domain category pills.
 
-## v5.0.0 — Complete FEMA Recovery Suite & ALERTWest / UOregon OHAZ WUI Wildfire Response
+## v5.0.0 — Complete FEMA Recovery Suite & ALERTWest WUI Wildfire Response
 
 - **Complete FEMA `ESF #3` & Individual Assistance (`IA`) Suite (`crates/ug-core/src/fema_gsb_drc_tdms.rs`)**:
   - **FEMA Generator Staging Base (`GSB`) & USACE `249th Engineer Battalion (Prime Power)`**: Pre-installation switchgear/load assessments, prime-power diesel pack sizing (`60–1,150 kW`), and convoy dispatch to hospitals, water/wastewater plants, clean-air shelters, and `C-POD`s (`Ctrl+Z` undoable live backup power activation).
   - **EPA / FEMA-325 Temporary Debris Management Sites (`TDMS`)**: 4-stream disaster debris segregation (`Vegetative` `75%` air-curtain/grinding volume reduction, `C&D` aggregate recycling, mandatory EPA Phase 1 `HHW` sweep, and `White Goods` Sec. 608 Freon recovery) with ADMS load-ticket towers and `30 yd^3` dump-truck haul-off fleets.
   - **FEMA `DRC` & Roving `MRIC` Individual Assistance Queueing**: Fixed multi-agency `DRC`s (`FEMA IA + U.S. SBA` disaster loans + appeals) paired with GTFS-walkable Mobile Registration Intake Centers (`MRIC`s) modeled via Allen-Cunneen `M/G/c` survivor intake queues.
-- **`ALERTWest` & University of Oregon `OHAZ` Wildfire Camera Network + `NWCG` WUI Suppression (`crates/ug-core/src/wildfire_alertwest_ohaz.rs`)**:
-  - **Native `ALERTWest` (`https://www.alertwest.org/`) & `UOregon OHAZ` (`https://ohaz.uoregon.edu/wildfire-cameras/`) Feed Linker**: Parses `.json`, GeoJSON `FeatureCollection`, and `.csv` camera/detection feeds (including bundled `data/alertwest_ohaz_oregon_cameras.json`) with `360°` pan, `40x` optical zoom, `30 mi` day / `40 mi` near-infrared (`NIR`) night vision, `2-min` AI scan cadence, co-located `PNSN`/`ShakeAlert` seismic telemetry, and `< 50 lb` Starlink **Mobile Deployment Units (`MDU`s)**.
+- **`ALERTWest` Wildfire Camera Network + `NWCG` WUI Suppression (`crates/ug-core/src/wildfire_cameras.rs`)**:
+  - **Native `ALERTWest` (`https://www.alertwest.org/`) Feed Linker**: Parses `.json`, GeoJSON `FeatureCollection`, and `.csv` camera/detection feeds (including bundled `data/western_wildfire_cameras.json`) with `360°` pan, `40x` optical zoom, `30 mi` day / `40 mi` near-infrared (`NIR`) night vision, `2-min` AI scan cadence, co-located seismic station telemetry, and `< 50 lb` Starlink **Mobile Deployment Units (`MDU`s)**.
   - **Weighted Least-Squares (`WLS`) Multi-Camera Cross-Azimuth Triangulation**: Intersects `>= 2` camera smoke bearings to localize WUI ignitions (`CEP_90` meters) in `2–4 min` vs. `911` visual calls.
-  - **Rothermel (1972) / `NWCG` (`RMRS-GTR-253`) WUI Fire Behavior & Interagency Suppression**: Evaluates flame length (`<= 4 ft`, `4–8 ft`, `8–11 ft`, `> 11 ft` crowning thresholds), `20`-person **Type 1 Hotshot Crews (`IHC`)**, **Wildland Bulldozers**, **Type 3/6 WUI Engines**, **Helitack Buckets**, and **`VLAT`/`LAT` `Phos-Chek` Retardant Lines**, coupled to Oregon Level 1/2/3 `IPAWS` evacuation & `Ctrl+Z` fuelbreaks.
+  - **Rothermel (1972) / `NWCG` (`RMRS-GTR-253`) WUI Fire Behavior & Interagency Suppression**: Evaluates flame length (`<= 4 ft`, `4–8 ft`, `8–11 ft`, `> 11 ft` crowning thresholds), `20`-person **Type 1 Hotshot Crews (`IHC`)**, **Wildland Bulldozers**, **Type 3/6 WUI Engines**, **Helitack Buckets**, and **`VLAT`/`LAT` `Phos-Chek` Retardant Lines**, coupled to 3-tier Ready/Set/Go `IPAWS` evacuation & `Ctrl+Z` fuelbreaks.
 
 ```bash
 # Run FEMA ESF-3 Prime Power GSB + TDMS Debris + DRC/MRIC Recovery Monte Carlo
-cargo run --release -- fema-recovery --scenario corvallis --policy integrated-suite --prt-teams 4 --drcs 2 --mrics 3
+cargo run --release -- fema-recovery --scenario riverfront-bridges --policy integrated-suite --prt-teams 4 --drcs 2 --mrics 3
 
-# Run ALERTWest + UOregon OHAZ PTZ Camera Triangulation & NWCG WUI Wildfire Suppression with linked camera JSON
-cargo run --release -- wildfire --scenario corvallis --camera-feed data/alertwest_ohaz_oregon_cameras.json --posture full-aerial --wind-mph 26 --rh-pct 12
+# Run ALERTWest PTZ Camera Triangulation & NWCG WUI Wildfire Suppression with linked camera JSON
+cargo run --release -- wildfire --scenario foothill-canyon-wui --camera-feed data/western_wildfire_cameras.json --posture full-aerial --wind-mph 26 --rh-pct 12
 ```
 
 ## v5.1.0 — Post-Wildfire Burn-Scar Hydrophobic Runoff, USGS Debris-Flow Basins & Culvert Washouts
 
 - **Post-Wildfire Watershed & Culvert Coupling (`crates/ug-core/src/burn_scar_debris_flow.rs`)**:
-  - **USFS `BAER` Soil Burn Severity (`dNBR`) & Hydrophobic Curve Numbers (`CN`)**: Couples wildfire burn perimeters from `wildfire_alertwest_ohaz.rs` to water-repellent soil `CN` shifts (`60 -> 86/94`), reduced initial abstraction (`Ia = 0.08 S`), overland sheetflow amplification, and sediment-bulked peak discharge `Q_bulked`.
+  - **USFS `BAER` Soil Burn Severity (`dNBR`) & Hydrophobic Curve Numbers (`CN`)**: Couples wildfire burn perimeters from `wildfire_cameras.rs` to water-repellent soil `CN` shifts (`60 -> 86/94`), reduced initial abstraction (`Ia = 0.08 S`), overland sheetflow amplification, and sediment-bulked peak discharge `Q_bulked`.
   - **USGS `Staley et al. (2016/2017) M1` Likelihood & `Gartner et al. (2014)` Sediment Volume**: Evaluates `X = -3.63 + 0.41*R15*MH23 + 0.67*R15*(dNBR/1000) + 0.70*R15*KF`, exact basin `I15_P50` (`mm/hr`) intensity thresholds, and `ln(V_m3)` debris-flow yields across delineated upslope basins.
   - **`FHWA HDS-5` Stormwater Culvert Plugging, `HW/D` Overtopping & Roadway/Sewer Coupling**: Simulates woody-slash barrel occlusion, submerged orifice headwater `HW/D`, roadway embankment scour washouts (`Ctrl+Z` undoable road closures + severed utility mains + sanitary sewer `RDII` storm surcharge), and USFS `BAER` wood-strand mulch + grizzly trash-rack + twin-box culvert retrofits.
 
 ```bash
 # Run Post-Wildfire Burn-Scar Hydrophobic Runoff, USGS M1/Gartner Basins & FHWA HDS-5 Culvert Washouts
-cargo run --release -- debris-flow --scenario corvallis --baer-policy full-baer --i15-mm-hr 38 --storm-mm 72
+cargo run --release -- debris-flow --scenario foothill-canyon-wui --baer-policy full-baer --i15-mm-hr 38 --storm-mm 72
 ```
 
 ## v5.2.0 — Post-Wildfire Ash/Turbidity Spikes, WTP Intake Shutoffs, Coagulant Dosing & Storage Drawdown
@@ -222,7 +222,7 @@ cargo run --release -- debris-flow --scenario corvallis --baer-policy full-baer 
 
 ```bash
 # Run 72-Hour Post-Wildfire WTP Turbidity Shutoff, Coagulant Dosing & Finished-Water Storage Drawdown
-cargo run --release -- wtp-turbidity --scenario corvallis --policy ferric-pac-wells --shutoff-ntu 350 --wells-mgd 5.5
+cargo run --release -- wtp-turbidity --scenario riverfront-bridges --policy ferric-pac-wells --shutoff-ntu 350 --wells-mgd 5.5
 ```
 
 ## Citation & CRV Science Apps Hub

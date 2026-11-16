@@ -38,7 +38,7 @@ pub enum GtfsError {
 /// TRB Transit Capacity and Quality of Service Manual (TCQSM, TCRP Report 165 Ch. 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BoardingFareMode {
-    /// Fare-free all-door boarding (e.g. Corvallis Transit System / full BRT) — fastest dwell.
+    /// Fare-free all-door boarding (e.g. Metro Transit System / full BRT) — fastest dwell.
     AllDoorFareFreeBrt,
     /// Dual-channel smartcard / contactless tap boarding.
     SmartcardTap,
@@ -662,7 +662,7 @@ impl TransitGtfsSystem {
     }
 
     /// Synthesizes realistic arterial GTFS routes and curbside stops automatically for any
-    /// road network (Corvallis, Roundabout, Braess, Megacity50k, or imported `.osm` map).
+    /// road network (`RiverfrontBridges`, `HarborPeninsula`, `RadialRingPlazas`, `FoothillCanyonWui`, `Metropolis50k`, or imported `.osm` map).
     pub fn synthesize_for_network(
         net: &RoadNetwork,
         parcels: &[Parcel],

@@ -19,8 +19,8 @@
 //! Grounded in:
 //! - FEMA Hazus Earthquake Model Highway Bridge Fragility Functions (`HWB` classes, 4 damage
 //!   states: Slight, Moderate, Extensive, Complete; lognormal dispersion `beta = 0.60` on
-//!   `Sa(1.0 s)` in `g`) — `https://ascelibrary.com/doi/10.1061/PPSCFX.SCENG-1464` and ODOT
-//!   Oregon Highway Seismic Risk Models (`https://rosap.ntl.bts.gov/view/dot/40242/dot_40242_DS1.pdf`).
+//!   `Sa(1.0 s)` in `g`) — `https://ascelibrary.com/doi/10.1061/PPSCFX.SCENG-1464` and
+//!   Regional DOT Highway Seismic Risk Models.
 //! - FEMA Hazus Highway Bridge Continuous Normal Restoration Functions (`Slight: 0.6 +- 0.6 d`,
 //!   `Moderate: 2.5 +- 2.7 d`, `Extensive: 75.0 +- 42.0 d`, `Complete: 230.0 +- 110.0 d`) —
 //!   `https://rosap.ntl.bts.gov/view/dot/27476/dot_27476_DS1.pdf` and ASME Journal of Risk and

@@ -25,8 +25,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::fs;
 use std::path::PathBuf;
 use ug_core::{
-    apply_tod_upzoning_policy, builtin_braess_diamond_osm, builtin_corvallis_couplets_osm,
-    builtin_megacity_supergrid_osm, builtin_roundabout_osm, load_osm_path, parse_osm_xml_str,
+    apply_tod_upzoning_policy, builtin_braess_diamond_osm, builtin_foothill_canyon_wui_osm,
+    builtin_harbor_peninsula_osm, builtin_metropolis_50k_osm, builtin_radial_ring_plazas_osm,
+    builtin_riverfront_bridges_osm, builtin_roundabout_osm, load_osm_path, parse_osm_xml_str,
     BatchExperimentConfig, BusynessModel, DisruptionInterdictionDepth, DiurnalDispatchRegime,
     DiurnalProfileConfig, DiurnalWindowPreset, HypercubeConfig, HypercubeQueueDiscipline,
     MclpSitingConfig, RedistrictingConfig, RedistrictingObjectiveMode,
@@ -34,7 +35,7 @@ use ug_core::{
     AmbulanceDiversionPolicy, BoardingFareMode, BusCoachSpec, BusContraflowLaneMode,
     CommodityResupplyConfig, ContraflowReversalPolicy, DepartureStagingPolicy,
     DebrisAndUsarPolicy, EmergencySheltersConfig, EocIpaswUplinkMode,
-    builtin_oregon_ohaz_alertwest_feed_json, load_alertwest_ohaz_feed_path,
+    builtin_western_wildfire_camera_feed_json, load_wildfire_camera_feed_path,
     EvacuationContraflowConfig, FemaCommsConfig, FemaCommsPosture, FemaGsbDrcTdmsConfig,
     FemaIsbPodsConfig, FemaRecoveryExecutionPolicy, FemaUsarDebrisConfig,
     BaerWatershedMitigationPolicy, BurnScarDebrisFlowConfig,
@@ -207,10 +208,13 @@ enum DiversionCliPolicy {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum BuiltinScenario {
-    Corvallis,
+    RiverfrontBridges,
+    HarborPeninsula,
+    RadialRingPlazas,
+    FoothillCanyonWui,
+    Metropolis50k,
     Roundabout,
     Braess,
-    Megacity50k,
 }
 
 #[derive(Parser, Debug)]
@@ -238,7 +242,7 @@ struct Cli {
 enum Commands {
     /// Launch interactive egui + custom wgpu @compute/instanced 120 FPS desktop workbench
     Gui {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Megacity50k)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::Metropolis50k)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -260,7 +264,7 @@ enum Commands {
     },
     /// Launch interactive Ratatui terminal dashboard
     Tui {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -273,7 +277,7 @@ enum Commands {
     },
     /// Run headless batch simulation and emit JSON/CSV outputs
     Simulate {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -300,7 +304,7 @@ enum Commands {
     },
     /// Compare Baseline vs. 15-Minute TOD + 5-min All-Door BRT + Protected Bike Network
     Compare {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -315,7 +319,7 @@ enum Commands {
     },
     /// Compare Fixed-Time, Max-Pressure Adaptive, and Modern Roundabout scenarios in parallel with Rayon and export a summary CSV scorecard
     Batch {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -359,7 +363,7 @@ enum Commands {
     },
     /// Solve Daskin (1983) MEXCLP (busy apparatus & 2nd-due backup) or Church & ReVelle (1974) MCLP station/fleet siting
     Mclp {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Megacity50k)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::Metropolis50k)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -392,7 +396,7 @@ enum Commands {
     },
     /// Run arterial bridge/corridor closure stress-test (N-1 & N-2 interdiction) on MCLP station placements
     StressTest {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Megacity50k)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::Metropolis50k)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -415,7 +419,7 @@ enum Commands {
     },
     /// Run probabilistic Hazus seismic bridge fragility & spatially correlated Monte Carlo post-event travel-time sweep
     SeismicMc {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Megacity50k)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::Metropolis50k)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -454,7 +458,7 @@ enum Commands {
     },
     /// Solve Larson (1974) exact 2^N M/M/N spatial hypercube queueing equations for heterogeneous per-unit busy fractions
     Hypercube {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -477,7 +481,7 @@ enum Commands {
     },
     /// Optimize Carter, Chaiken & Ignall (1972) / Larson hypercube response-district boundaries
     Redistrict {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -502,7 +506,7 @@ enum Commands {
     },
     /// Solve 24-hour diurnal emergency call & BPR rush-hour travel-time profiles with separate Peak vs. Off-Peak dispatch tables
     Diurnal {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -527,7 +531,7 @@ enum Commands {
     },
     /// Evaluate coupled 12.47 kV Electrical, Hazen-Williams Potable Water, and Manning/RDII Wastewater lifeline grids
     Utilities {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -554,7 +558,7 @@ enum Commands {
     },
     /// Simulate Scawthorn / Hazus Fire-Following-Earthquake (FFE) ignitions & wind-driven conflagration coupled to <20 psi hydrants
     Ffe {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -589,7 +593,7 @@ enum Commands {
     },
     /// Simulate post-earthquake Hospital ED Surge Capacity, Burn/Trauma Priority Triage Queueing & Dynamic Ambulance Diversion
     Surge {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -626,7 +630,7 @@ enum Commands {
     },
     /// Simulate post-earthquake Rotary-Wing Medevac Helipads, Koschmieder Smoke/Weather Flight Envelopes & Secondary WRBDC Burn Transfers
     Medevac {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -661,7 +665,7 @@ enum Commands {
     },
     /// Simulate coupled FFE perimeter road closures, smoke visibility speed drop, staged neighborhood evacuation & arterial contraflow
     Evacuate {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -692,7 +696,7 @@ enum Commands {
     },
     /// Simulate post-earthquake Emergency Shelter Siting, ATC-20/Lifeline Habitability, HEPA Smoke Filtration & Capacitated Evacuee Routing
     Shelters {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -725,7 +729,7 @@ enum Commands {
     },
     /// Simulate post-earthquake multi-day shelter & hospital commodity resupply VRP (Water, Diesel, MREs & Medical Oxygen)
     Resupply {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -760,7 +764,7 @@ enum Commands {
     },
     /// Simulate coupled GTFS transit-bus & ADA paratransit evacuation via Bus+EMS contraflow lanes into clean-air HEPA shelters
     TransitEvac {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -791,7 +795,7 @@ enum Commands {
     },
     /// Simulate post-earthquake cellular tower blackout fragility, WEA vs. siren/door-to-door mobilization S-curves & delayed staging
     Warning {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -824,7 +828,7 @@ enum Commands {
     },
     /// Simulate FEMA IPAWS-OPEN (CAP v1.2, WEA 3.0, NPWS/PEP EAS, NOAA SAME), FNARS HF & Region 10 MERS ESF-2 communications
     FemaComms {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -857,7 +861,7 @@ enum Commands {
     },
     /// Simulate FEMA Incident Staging Bases (ISB), USACE IS-26 Type I-III POD queueing & IPAWS public POD routing
     FemaPods {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -888,7 +892,7 @@ enum Commands {
     },
     /// Simulate FEMA Type 1 US&R Task Force USNG structural search grids, ESF-3 roadway debris clearance & ISB/POD reopening
     FemaUsar {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -915,7 +919,7 @@ enum Commands {
     },
     /// Simulate FEMA ESF-3 Generator Staging Base (249th Prime Power), TDMS Debris Sorting & DRC/MRIC Individual Assistance
     FemaRecovery {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -944,18 +948,18 @@ enum Commands {
         #[arg(long)]
         json_out: Option<PathBuf>,
     },
-    /// Simulate ALERTWest (alertwest.org) & UOregon OHAZ (ohaz.uoregon.edu/wildfire-cameras/) AI PTZ Wildfire Triangulation & NWCG Suppression
+    /// Simulate ALERTWest (alertwest.org) AI PTZ Wildfire Triangulation & NWCG Suppression
     Wildfire {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::FoothillCanyonWui)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
         #[arg(long)]
         load_snapshot: Option<PathBuf>,
-        /// Optional path to an ALERTWest / UOregon OHAZ camera feed (.json, GeoJSON, or .csv)
+        /// Optional path to an ALERTWest / western wildfire camera feed (.json, GeoJSON, or .csv)
         #[arg(long)]
         camera_feed: Option<PathBuf>,
-        /// Optional path to write the built-in Oregon OHAZ / ALERTWest camera JSON template
+        /// Optional path to write the built-in western wildfire camera JSON template
         #[arg(long)]
         export_sample_feed: Option<PathBuf>,
         #[arg(long, value_enum, default_value_t = WildfirePostureCli::FullAerial)]
@@ -985,7 +989,7 @@ enum Commands {
     },
     /// Simulate Post-Wildfire Burn-Scar Hydrophobic Runoff, USGS M1/Gartner Debris-Flow Basins & FHWA HDS-5 Culvert Washouts
     DebrisFlow {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -1012,7 +1016,7 @@ enum Commands {
     },
     /// Simulate Post-Wildfire Burn-Scar Ash/Turbidity Spikes, WTP Intake Shutoffs, Coagulant Dosing & Finished-Water Drawdown
     WtpTurbidity {
-        #[arg(long, value_enum, default_value_t = BuiltinScenario::Corvallis)]
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
         scenario: BuiltinScenario,
         #[arg(long)]
         osm: Option<PathBuf>,
@@ -1066,10 +1070,13 @@ fn build_world(
         load_osm_path(p).map_err(|e| e.to_string())?
     } else {
         let xml = match scenario {
-            BuiltinScenario::Corvallis => builtin_corvallis_couplets_osm(),
+            BuiltinScenario::RiverfrontBridges => builtin_riverfront_bridges_osm(),
+            BuiltinScenario::HarborPeninsula => builtin_harbor_peninsula_osm(),
+            BuiltinScenario::RadialRingPlazas => builtin_radial_ring_plazas_osm(),
+            BuiltinScenario::FoothillCanyonWui => builtin_foothill_canyon_wui_osm(),
+            BuiltinScenario::Metropolis50k => builtin_metropolis_50k_osm(),
             BuiltinScenario::Roundabout => builtin_roundabout_osm(),
             BuiltinScenario::Braess => builtin_braess_diamond_osm(),
-            BuiltinScenario::Megacity50k => builtin_megacity_supergrid_osm(12, 12),
         };
         parse_osm_xml_str(&xml).map_err(|e| e.to_string())?
     };
@@ -1079,7 +1086,7 @@ fn build_world(
     }
     if let Some(n) = agents {
         world.seed_50k_megacity_crowd(n);
-    } else if scenario == BuiltinScenario::Megacity50k {
+    } else if scenario == BuiltinScenario::Metropolis50k {
         world.seed_50k_megacity_crowd(52_000);
     }
     Ok(world)
@@ -1088,7 +1095,7 @@ fn build_world(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match cli.command.unwrap_or(Commands::Gui {
-        scenario: BuiltinScenario::Megacity50k,
+        scenario: BuiltinScenario::RiverfrontBridges,
         osm: None,
         gtfs: None,
         load_snapshot: None,
@@ -3383,9 +3390,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         fs::create_dir_all(parent)?;
                     }
                 }
-                fs::write(&sample_out, builtin_oregon_ohaz_alertwest_feed_json())?;
+                fs::write(&sample_out, builtin_western_wildfire_camera_feed_json())?;
                 println!(
-                    "Exported sample ALERTWest / UOregon OHAZ camera feed JSON -> {:?}",
+                    "Exported sample ALERTWest wildfire camera feed JSON -> {:?}",
                     sample_out
                 );
             }
@@ -3402,7 +3409,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 world.apply_mclp_siting_solution(&sited);
             }
             let custom_cams = if let Some(cpath) = camera_feed {
-                load_alertwest_ohaz_feed_path(&cpath, world.network.bounds)?
+                load_wildfire_camera_feed_path(&cpath, world.network.bounds)?
             } else {
                 Vec::new()
             };
@@ -3411,10 +3418,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     WildfireDetectionAndAttackPosture::Legacy911GroundOnly
                 }
                 WildfirePostureCli::FixedPtzIa => {
-                    WildfireDetectionAndAttackPosture::AlertWestOhazFixedPtzInitialAttack
+                    WildfireDetectionAndAttackPosture::AlertWestFixedPtzInitialAttack
                 }
                 WildfirePostureCli::FullAerial => {
-                    WildfireDetectionAndAttackPosture::FullAlertWestOhazMduAndAerialAttack
+                    WildfireDetectionAndAttackPosture::FullAlertWestMduAndAerialAttack
                 }
             };
             let w_fuel = match fuel {
@@ -3430,7 +3437,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 relative_humidity_pct: rh_pct,
                 terrain_slope_pct: slope_pct,
                 nocturnal_ignition: night_nir,
-                ohaz_starlink_mdu_units: starlink_mdus,
+                starlink_mdu_units: starlink_mdus,
                 type1_hotshot_crews_20pax: hotshot_crews,
                 fixed_wing_airtankers: airtankers,
                 monte_carlo_trials: trials,
@@ -3439,13 +3446,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let rep = world.run_wildfire_alertwest_mc(&wcfg);
             println!(
-                "=== urban-grid v5.0 ALERTWest & UOregon OHAZ Cameras + NWCG WUI Wildfire ({:.1} ms | {} trials | {}) ===",
+                "=== urban-grid v5.0 ALERTWest Cameras + NWCG WUI Wildfire ({:.1} ms | {} trials | {}) ===",
                 rep.solve_time_ms,
                 trials,
                 w_pst.short_label()
             );
             println!(
-                "  ALERTWest/OHAZ    : {} Cameras ({} LOS, {} PNSN/ShakeAlert) | WLS CEP90={:.1} m | Detect->Dispatch={:.1} min",
+                "  ALERTWest         : {} Cameras ({} LOS, {} Seismic) | WLS CEP90={:.1} m | Detect->Dispatch={:.1} min",
                 rep.active_camera_count,
                 rep.cameras_with_los_count,
                 rep.pnsn_shakealert_colocated_count,
@@ -3469,7 +3476,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             if let Some(cpath) = camera_csv_out {
                 let n = rep.export_camera_csv_path(&cpath)?;
-                println!("Exported {n} ALERTWest/OHAZ camera rows -> {:?}", cpath);
+                println!("Exported {n} ALERTWest wildfire camera rows -> {:?}", cpath);
             }
             if let Some(jout) = json_out {
                 if let Some(parent) = jout.parent() {

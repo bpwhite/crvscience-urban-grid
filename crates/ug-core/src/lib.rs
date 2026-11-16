@@ -46,7 +46,7 @@ pub mod transit_evacuation;
 pub mod transit_gtfs;
 pub mod utilities;
 pub mod warning_mobilization;
-pub mod wildfire_alertwest_ohaz;
+pub mod wildfire_cameras;
 pub mod wtp_turbidity_storage;
 pub mod zoning;
 
@@ -115,15 +115,14 @@ pub use fema_gsb_drc_tdms::{
     FemaRecoveryDailyPoint, FemaRecoveryExecutionPolicy, FemaRecoveryFacilityRow,
     FemaRecoverySiteKind, FEMA_RECOVERY_DAILY_CSV_HEADER, FEMA_RECOVERY_FACILITY_CSV_HEADER,
 };
-pub use wildfire_alertwest_ohaz::{
-    builtin_oregon_ohaz_alertwest_feed_json, compute_rothermel_wui_fire_behavior,
-    load_alertwest_ohaz_feed_path, nwcg_crew_and_dozer_line_rates_ft_hr,
-    parse_alertwest_ohaz_feed_str, project_cameras_to_bounds, run_wildfire_alertwest_monte_carlo,
-    triangulate_camera_bearings_wls, AlertWestOhazCameraKind, AlertWestOhazCameraSite,
-    NwcgSuppressionThresholdClass, RothermelFireBehaviorMetrics,
-    WildfireAlertWestConfig, WildfireAlertWestReport, WildfireDetectionAndAttackPosture,
-    WildfireTimelinePoint, WuiFuelModel, WuiStructureTriageCategory, WILDFIRE_CAMERA_CSV_HEADER,
-    WILDFIRE_TIMELINE_CSV_HEADER,
+pub use wildfire_cameras::{
+    builtin_western_wildfire_camera_feed_json, compute_rothermel_wui_fire_behavior,
+    load_wildfire_camera_feed_path, nwcg_crew_and_dozer_line_rates_ft_hr,
+    parse_wildfire_camera_feed_str, project_cameras_to_bounds, run_wildfire_alertwest_monte_carlo,
+    triangulate_camera_bearings_wls, NwcgSuppressionThresholdClass, RothermelFireBehaviorMetrics,
+    WildfireAlertWestConfig, WildfireAlertWestReport, WildfireCameraKind, WildfireCameraSite,
+    WildfireDetectionAndAttackPosture, WildfireTimelinePoint, WuiFuelModel,
+    WuiStructureTriageCategory, WILDFIRE_CAMERA_CSV_HEADER, WILDFIRE_TIMELINE_CSV_HEADER,
 };
 pub use burn_scar_debris_flow::{
     fhwa_hds5_culvert_headwater_ratio, nrcs_baer_hydrophobic_runoff_and_peak_q,
@@ -167,8 +166,8 @@ pub use gpu_pack::{
     AGENT_FLAG_BLINK_RIGHT, AGENT_FLAG_BRAKING, AGENT_FLAG_DWELLING, AGENT_KIND_BUS,
     AGENT_KIND_CYCLIST, AGENT_KIND_EMERGENCY, AGENT_KIND_PEDESTRIAN, AGENT_KIND_SEDAN,
     AGENT_KIND_TRUCK, HEATMAP_BYTES_PER_ROW, HEATMAP_BYTE_LEN, HEATMAP_DIM,
-    ROAD_STYLE_BUS_STOP, ROAD_STYLE_EVP_PREEMPT, ROAD_STYLE_FIRE_STATION,
-    ROAD_STYLE_HOSPITAL,
+    ROAD_STYLE_BRIDGE_SPAN, ROAD_STYLE_BUS_STOP, ROAD_STYLE_EVP_PREEMPT, ROAD_STYLE_FIRE_STATION,
+    ROAD_STYLE_HOSPITAL, ROAD_STYLE_WATER_CHANNEL,
 };
 pub use history::{
     apply_edit_snapshot_to_world, EditCategory, EditCommandRecord, EditHistoryStack,
@@ -201,7 +200,7 @@ pub use network_edit::{
 };
 pub use network::{
     sample_polyline, sample_polyline_fast, ControlMode, LightColor, RoadNetwork, TurnType, Vec2,
-    LANE_WIDTH_M,
+    WaterFeature, LANE_WIDTH_M,
 };
 pub use seismic_mc::{
     ala_hazus_pipe_repair_rate_per_km, enumerate_seismic_bridge_inventory,
@@ -223,7 +222,8 @@ pub use persistence::{
     CSV_HEADER_COLUMNS, SNAPSHOT_SCHEMA_VERSION,
 };
 pub use osm::{
-    builtin_braess_diamond_osm, builtin_corvallis_couplets_osm, builtin_megacity_supergrid_osm,
+    builtin_braess_diamond_osm, builtin_foothill_canyon_wui_osm, builtin_harbor_peninsula_osm,
+    builtin_metropolis_50k_osm, builtin_radial_ring_plazas_osm, builtin_riverfront_bridges_osm,
     builtin_roundabout_osm, load_osm_path, parse_osm_xml_str, parse_overpass_json_str, OsmError,
     RawOsmDataset,
 };
@@ -256,8 +256,8 @@ pub use warning_mobilization::{
     WarningMobilizationReport, WARNING_CURVE_CSV_HEADER, WARNING_TOWER_CSV_HEADER,
 };
 pub use zoning::{
-    apply_tod_upzoning_policy, compute_gravity_od_matrix, generate_parcels_for_bounds, Parcel,
-    ZoneCode,
+    apply_tod_upzoning_policy, compute_gravity_od_matrix, generate_parcels_for_bounds,
+    generate_parcels_for_network, Parcel, ZoneCode,
 };
 
 #[cfg(test)]
@@ -277,12 +277,14 @@ mod tests {
     }
 
     #[test]
-    fn test_corvallis_osm_compiles_lanes_and_signals() {
-        let xml = builtin_corvallis_couplets_osm();
-        let osm = parse_osm_xml_str(&xml).expect("valid Corvallis OSM");
+    fn test_riverfront_bridges_osm_compiles_lanes_signals_and_water() {
+        let xml = builtin_riverfront_bridges_osm();
+        let osm = parse_osm_xml_str(&xml).expect("valid Riverfront Bridges OSM");
         let net = RoadNetwork::compile(&osm);
-        assert!(net.junctions.len() >= 24);
-        assert!(net.lanes.len() >= 60);
+        assert!(net.junctions.len() >= 18);
+        assert!(net.lanes.len() >= 50);
+        assert!(!net.water_features.is_empty());
+        assert!(net.segments.iter().any(|s| s.is_bridge));
         assert!(!net.sources.is_empty());
         assert!(!net.sinks.is_empty());
     }
@@ -298,7 +300,7 @@ mod tests {
 
     #[test]
     fn test_wilson_gravity_matrix_row_conservation() {
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let parcels = generate_parcels_for_bounds(net.bounds);
         let od = compute_gravity_od_matrix(&parcels, 0.12);
@@ -309,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_tod_upzoning_shifts_mcfadden_mode_share_and_fiscal_yield() {
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let base_auto = world.mode_shares.auto;
@@ -326,12 +328,12 @@ mod tests {
 
     #[test]
     fn test_gtfs_csv_ingestion_dwell_times_and_live_crowding() {
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let parcels = generate_parcels_for_bounds(net.bounds);
 
-        let stops_csv = "stop_id,stop_name,stop_lat,stop_lon\nS1,\"4th & Van Buren\",44.56605,-123.26290\nS2,\"4th & Jackson\",44.56495,-123.26290\n";
-        let routes_csv = "route_id,route_short_name,route_long_name,route_type,route_color\nR1,1,\"OR-99W Trunk\",3,EF4444\n";
+        let stops_csv = "stop_id,stop_name,stop_lat,stop_lon\nS1,\"West Couplet North\",40.000950,-105.002500\nS2,\"West Couplet South\",39.999050,-105.002500\n";
+        let routes_csv = "route_id,route_short_name,route_long_name,route_type,route_color\nR1,1,\"Metro Trunk Line 1\",3,EF4444\n";
         let trips_csv = "route_id,service_id,trip_id,direction_id\nR1,WK,T1,0\n";
         let st_csv = "trip_id,arrival_time,departure_time,stop_id,stop_sequence\nT1,08:00:00,08:00:20,S1,1\nT1,08:02:00,08:02:20,S2,2\n";
 
@@ -365,7 +367,7 @@ mod tests {
 
     #[test]
     fn test_megacity_50k_agents_pack_and_heatmap_rasterize() {
-        let xml = builtin_megacity_supergrid_osm(12, 12);
+        let xml = builtin_metropolis_50k_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).expect("valid Megacity OSM"));
         let mut world = SimulationWorld::new(net);
         world.seed_50k_megacity_crowd(52_000);
@@ -434,7 +436,7 @@ mod tests {
 
     #[test]
     fn test_scenario_snapshot_json_roundtrip_and_csv_telemetry_export() {
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         apply_tod_upzoning_policy(&mut world.parcels, &mut world.network);
@@ -449,7 +451,7 @@ mod tests {
             diffusivity: 0.52,
             decay_rate: 0.70,
         };
-        let snap = ScenarioSnapshot::capture(&world, plume, "Corvallis TOD Test", true);
+        let snap = ScenarioSnapshot::capture(&world, plume, "Riverfront Bridges TOD Test", true);
         let json_str = snap.to_json_pretty().expect("JSON serializes cleanly without tuple-key error");
         assert!(json_str.contains(SNAPSHOT_SCHEMA_VERSION));
 
@@ -474,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_max_pressure_adapts_green_to_asymmetric_queue_and_gates_spillback() {
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let upgraded = world.network.enable_network_max_pressure();
@@ -561,7 +563,7 @@ mod tests {
 
     #[test]
     fn test_interactive_road_draw_lane_edit_and_roundabout_conversion_preserve_simulation() {
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         for _ in 0..80 {
@@ -624,7 +626,7 @@ mod tests {
 
     #[test]
     fn test_undo_redo_command_stack_across_road_draw_lanes_roundabout_and_zoning() {
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         for _ in 0..40 {
@@ -738,7 +740,7 @@ mod tests {
 
     #[test]
     fn test_rayon_parallel_batch_runner_compares_fixed_max_pressure_and_roundabouts() {
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let base_world = SimulationWorld::new(net);
 
@@ -790,7 +792,7 @@ mod tests {
 
     #[test]
     fn test_batch_progress_tracker_and_cooperative_cancellation() {
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let base_world = SimulationWorld::new(net);
         let cfg = BatchExperimentConfig {
@@ -822,7 +824,7 @@ mod tests {
 
     #[test]
     fn test_emergency_responder_corridor_green_wave_preemption_and_mobil_yielding() {
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         world.evp_config.auto_dispatch_per_min = 0.0;
@@ -924,7 +926,7 @@ mod tests {
 
     #[test]
     fn test_fire_station_and_hospital_placement_undo_and_4min_coverage_heatmap() {
-        let xml = builtin_megacity_supergrid_osm(8, 8);
+        let xml = builtin_metropolis_50k_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
 
@@ -1011,7 +1013,7 @@ mod tests {
     fn test_mclp_station_siting_optimizer_reaches_90pct_nfpa1710_coverage_and_undoes() {
         // Use a large 12x12 Megacity supergrid with a tight 150s threshold so a single corner
         // station cannot cover 90% alone, requiring multi-station MCLP + GAS optimization!
-        let xml = builtin_megacity_supergrid_osm(12, 12);
+        let xml = builtin_metropolis_50k_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
 
@@ -1343,7 +1345,7 @@ mod tests {
         );
 
         // 2. Run Monte Carlo recovery trajectory on a two-bank bridge network & verify monotonic recovery
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let sited = world.solve_mclp_station_siting(&MclpSitingConfig::default());
@@ -1415,9 +1417,9 @@ mod tests {
         assert!((p3 - 0.973).abs() < 1e-9);
 
         // 2. Compare Deterministic MCLP (q=0) vs. Daskin MEXCLP + Hogan-ReVelle Second-Due Backup (q=0.30)
-        //    on Corvallis: when apparatus are busy 30% of the time, single-station binary 100% coverage
+        //    on the Riverfront network: when apparatus are busy 30% of the time, single-station binary 100% coverage
         //    only yields 70% expected coverage, so MEXCLP deploys overlapping backup apparatus to reach >= 90%!
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
 
@@ -1541,7 +1543,7 @@ mod tests {
         );
 
         // 2. Verify live `SimulationWorld` hypercube integration & `BusynessModel::LarsonHypercube1974` inside MEXCLP!
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let hc_siting_cfg = MclpSitingConfig {
@@ -1662,8 +1664,8 @@ mod tests {
         assert!(bal_rep.to_unit_csv_string().starts_with(REDISTRICT_UNIT_CSV_HEADER));
         assert!(bal_rep.to_pareto_csv_string().starts_with(REDISTRICT_PARETO_CSV_HEADER));
 
-        // 2. Full `SimulationWorld` Corvallis network redistricting + `HeatmapLayer::ResponseDistricts` + `Ctrl+Z` undo/redo!
-        let xml = builtin_corvallis_couplets_osm();
+        // 2. Full `SimulationWorld` Riverfront network redistricting + `HeatmapLayer::ResponseDistricts` + `Ctrl+Z` undo/redo!
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let sited = world.solve_mclp_station_siting(&MclpSitingConfig {
@@ -1717,8 +1719,8 @@ mod tests {
         let m_17 = bpr_travel_time_multiplier(diurnal_arterial_vc_ratio(17, 1.18), 0.24, 4.0);
         assert!(m_17 > m_08 && m_08 > m_03 + 0.50);
 
-        // 3. Solve separate Peak vs. Off-Peak dispatch tables on Corvallis & verify distinct tables + PSA!
-        let xml = builtin_corvallis_couplets_osm();
+        // 3. Solve separate Peak vs. Off-Peak dispatch tables on the Riverfront network & verify distinct tables + PSA!
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let sited = world.solve_mclp_station_siting(&MclpSitingConfig {
@@ -1827,8 +1829,8 @@ mod tests {
         assert!((manning_circular_pipe_d_over_d(0.5) - 0.5).abs() < 1e-9);
         assert!(manning_circular_pipe_d_over_d(1.25) > 1.0);
 
-        // 2. Nominal Coupled 3-Grid Operation on Corvallis (`12:30` midday solar + dry weather)
-        let xml = builtin_corvallis_couplets_osm();
+        // 2. Nominal Coupled 3-Grid Operation on the Riverfront network (`12:30` midday solar + dry weather)
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         world.diurnal_clock_hour = 12.5;
@@ -1953,9 +1955,9 @@ mod tests {
             assert!(((rr_er / rr_ci) - 0.08).abs() < 1e-6);
         }
 
-        // 2. Run Multi-Lifeline Seismic Monte Carlo on Corvallis under Mw 7.7 Cascadia/crustal event:
+        // 2. Run Multi-Lifeline Seismic Monte Carlo on the Riverfront network under Mw 7.7 subduction/crustal event:
         //    compare Brittle Cast Iron / VCP (`0%` replaced) vs. `100%` Seismic ERDIP/HDPE under CRN!
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let sited = world.solve_mclp_station_siting(&MclpSitingConfig {
@@ -2090,10 +2092,10 @@ mod tests {
         );
         assert!(windy_wood.v_down_m_min > windy_cbd.v_down_m_min * 1.5);
 
-        // 3. Coupled Monte Carlo FFE on Corvallis under Common Random Numbers (`CRN`):
+        // 3. Coupled Monte Carlo FFE on the Riverfront network under Common Random Numbers (`CRN`):
         //    (a) High wind (`15 m/s`) vs. calm wind (`1 m/s`) with brittle Cast Iron pipes
         //    (b) `100%` Seismic ERDIP water pipes + Auxiliary Cisterns + Backup Power slashing dry-hydrant failures & loss!
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let sited = world.solve_mclp_station_siting(&MclpSitingConfig {
@@ -2207,7 +2209,7 @@ mod tests {
         assert!(r_hi > r_lo && y_hi > y_lo && g_hi > g_lo);
 
         // 3. Compare `ClosestHospitalNoDiversion` vs. `DynamicWaitPlusTravelTriage` under CRN
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let sited = world.solve_mclp_station_siting(&MclpSitingConfig {
@@ -2326,7 +2328,7 @@ mod tests {
         ));
 
         // 2. Compare Unhardened Night-VFR Rooftop Pads vs. Hardened WAAS PinS IFR + Surface Pads + WRBDC Burn Pact under CRN
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let sited = world.solve_mclp_station_siting(&MclpSitingConfig {
@@ -2413,7 +2415,7 @@ mod tests {
         assert!(q_dense < q_haze && q_haze < q_clear && (q_clear - 1.0).abs() < 1e-9);
 
         // 2. Compare Unstaged + No-Contraflow vs. Full-OneWay (breaks EMS) vs. Staged + EMS-Protected Contraflow under CRN
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let sited = world.solve_mclp_station_siting(&MclpSitingConfig {
@@ -2551,7 +2553,7 @@ mod tests {
         assert!(pm_hepa_blackout > pm_hepa_powered * 3.0);
 
         // 2. Compare Uncoordinated Nearest MERV-8 vs. 2-Stage Clean-Air Capacitated HEPA + Backup Lifelines under CRN
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let sited = world.solve_mclp_station_siting(&MclpSitingConfig {
@@ -2671,7 +2673,7 @@ mod tests {
         assert!(tour_len < radial_sum * 0.65);
 
         // 3. Compare Static Milk-Run vs. Deprivation-Aware Clarke-Wright IRP under CRN
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let sited = world.solve_mclp_station_siting(&MclpSitingConfig {
@@ -2781,7 +2783,7 @@ mod tests {
         assert!(ada_dw > dw_brt * 2.5);
 
         // 2. Compare Mixed-Auto-Queue Fixed-GTFS vs. Dedicated Bus+EMS Contraflow + Clean-Air TBEP under CRN
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let sited = world.solve_mclp_station_siting(&MclpSitingConfig {
@@ -2914,7 +2916,7 @@ mod tests {
         assert!(m45_fast > m45_dark * 2.4);
 
         // 3. Compare Legacy 3h Battery + WEA-Only Unstaged vs. Multi-Modal + Adaptive Blackout Staging at t = +5h nocturnal quake!
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let sited = world.solve_mclp_station_siting(&MclpSitingConfig {
@@ -3025,7 +3027,7 @@ mod tests {
         assert!((p_tri - 0.80).abs() < 1e-6);
 
         // 2. Compare Fiber-Only EOC + WEA-3.0-Only vs. Full FEMA Continuity (FNARS+MERS VSAT + PEP EAS + NWR SAME + MERS ESF-2)
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let sited = world.solve_mclp_station_siting(&MclpSitingConfig {
@@ -3142,7 +3144,7 @@ mod tests {
         assert!(sp_surge > sp_low + 25.0);
 
         // 2. Compare Uncoordinated Nearest-POD Rush vs. FEMA IPAWS Load-Balanced + Dynamic ISB Hotshot under CRN
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let sited = world.solve_mclp_station_siting(&MclpSitingConfig {
@@ -3259,7 +3261,7 @@ mod tests {
         assert!(cbd_tons > r1_tons * 3.5 && cbd_spill > 20.0);
 
         // 2. Compare Uncoordinated Haul-Off vs. Co-Optimized Teeth-of-a-Comb US&R + ISB/POD Push under CRN
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let sited = world.solve_mclp_station_siting(&MclpSitingConfig {
@@ -3352,7 +3354,7 @@ mod tests {
     }
 
     #[test]
-    fn fema_gsb_tdms_drc_and_wildfire_alertwest_ohaz_work() {
+    fn fema_gsb_tdms_drc_and_wildfire_cameras_work() {
         // 1. Verify USACE 249th Prime Power sizing & DRC/MRIC Allen-Cunneen M/G/c queueing physics
         let (hosp_kw, hosp_pre_h) = size_usace_249th_prime_power_pack(true, false, false, true);
         let (_, hosp_raw_h) = size_usace_249th_prime_power_pack(true, false, false, false);
@@ -3361,26 +3363,26 @@ mod tests {
         let (w_heavy, _) = evaluate_drc_mric_mgc_wait_min(26.0, 12, 26.0, 0.55);
         assert!(w_heavy > w_light);
 
-        // 2. Verify ALERTWest / UOregon OHAZ JSON, GeoJSON & CSV feed parsers + WLS cross-azimuth triangulation
-        let xml = builtin_corvallis_couplets_osm();
+        // 2. Verify ALERTWest Camera Network JSON, GeoJSON & CSV feed parsers + WLS cross-azimuth triangulation
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
-        let cams = parse_alertwest_ohaz_feed_str(
-            &builtin_oregon_ohaz_alertwest_feed_json(),
+        let cams = parse_wildfire_camera_feed_str(
+            &builtin_western_wildfire_camera_feed_json(),
             world.network.bounds,
         )
         .unwrap();
         assert!(cams.len() >= 5);
         assert!(cams.iter().any(|c| c.co_located_pnsn_shakealert));
 
-        let geojson_str = r#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[-123.5512,44.5044]},"properties":{"id":"Axis-MarysPeak","provider":"UOregon OHAZ","zoom_x":40.0,"shakealert":true}}]}"#;
-        let gj_cams = parse_alertwest_ohaz_feed_str(geojson_str, world.network.bounds).unwrap();
+        let geojson_str = r#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[-105.0512,40.0244]},"properties":{"id":"Axis-WestRidge","provider":"ALERTWest Network","zoom_x":40.0,"shakealert":true}}]}"#;
+        let gj_cams = parse_wildfire_camera_feed_str(geojson_str, world.network.bounds).unwrap();
         assert_eq!(gj_cams.len(), 1);
 
         let csv_str = "camera_id,provider,kind,lat,lon,elev_m,az_deg,zoom_x,shakealert
-Axis-BaldHill,OHAZ,PTZ,44.568,-123.331,230,95,40,true
+Axis-SummitLookout,ALERTWest,PTZ,40.018,-105.031,230,95,40,true
 ";
-        let csv_cams = parse_alertwest_ohaz_feed_str(csv_str, world.network.bounds).unwrap();
+        let csv_cams = parse_wildfire_camera_feed_str(csv_str, world.network.bounds).unwrap();
         assert_eq!(csv_cams.len(), 1);
 
         // Exact 2-ray orthogonal intersection at (500, 400): Cam A at (100, 400) bearing 90° East, Cam B at (500, 800) bearing 0° North
@@ -3421,7 +3423,7 @@ Axis-BaldHill,OHAZ,PTZ,44.568,-123.331,230,95,40,true
             ..WildfireAlertWestConfig::default()
         });
         let wf_aw = world.run_wildfire_alertwest_mc(&WildfireAlertWestConfig {
-            posture: WildfireDetectionAndAttackPosture::FullAlertWestOhazMduAndAerialAttack,
+            posture: WildfireDetectionAndAttackPosture::FullAlertWestMduAndAerialAttack,
             monte_carlo_trials: 48,
             ..WildfireAlertWestConfig::default()
         });
@@ -3471,7 +3473,7 @@ Axis-BaldHill,OHAZ,PTZ,44.568,-123.331,230,95,40,true
         assert_eq!(st_plug, CulvertHydraulicState::EmbankmentWashoutClosed);
 
         // 3. Compare Untreated Burn Scar vs Full BAER Mulch + Grizzly Racks + Box Culverts under CRN
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
         let mut base_df = BurnScarDebrisFlowConfig {
@@ -3525,7 +3527,7 @@ Axis-BaldHill,OHAZ,PTZ,44.568,-123.331,230,95,40,true
         assert!(ash_ferric_jar.pac_dose_mg_l > 10.0);
 
         // 2. Compare Run-to-Failure Alum vs Automated Shutoff vs Presed + FeCl3/PAC + Wells under CRN
-        let xml = builtin_corvallis_couplets_osm();
+        let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
         let mut world = SimulationWorld::new(net);
 
@@ -3569,5 +3571,72 @@ Axis-BaldHill,OHAZ,PTZ,44.568,-123.331,230,95,40,true
             arena.heatmap_rgba.chunks_exact(4).filter(|px| px[3] > 0).count(),
             HEATMAP_DIM * HEATMAP_DIM
         );
+    }
+
+    #[test]
+    fn test_five_distinct_city_morphologies_water_bridges_and_clipped_parcels() {
+        let scenarios = [
+            builtin_riverfront_bridges_osm(),
+            builtin_harbor_peninsula_osm(),
+            builtin_radial_ring_plazas_osm(),
+            builtin_foothill_canyon_wui_osm(),
+            builtin_metropolis_50k_osm(),
+        ];
+        let mut labels = Vec::new();
+        let mut signatures = Vec::new();
+        for xml in scenarios {
+            let osm = parse_osm_xml_str(&xml).expect("morphology OSM compiles");
+            let net = RoadNetwork::compile(&osm);
+            assert!(!net.segments.is_empty());
+            assert!(!net.junctions.is_empty());
+            let parcels = generate_parcels_for_network(&net);
+            assert!(!parcels.is_empty());
+            let world = SimulationWorld::new(net);
+            let mut arena = GpuStagingArena::new();
+            pack_road_quads_into(&world, &mut arena.road_quads);
+            let has_water_quad = arena
+                .road_quads
+                .iter()
+                .any(|q| q.style_kind == ROAD_STYLE_WATER_CHANNEL);
+            let has_bridge_quad = arena
+                .road_quads
+                .iter()
+                .any(|q| q.style_kind == ROAD_STYLE_BRIDGE_SPAN);
+            if !world.network.water_features.is_empty() {
+                assert!(
+                    has_water_quad,
+                    "{} has water_features but packed no ROAD_STYLE_WATER_CHANNEL quads",
+                    world.network.city_label
+                );
+            }
+            if world.network.segments.iter().any(|s| s.is_bridge) {
+                assert!(
+                    has_bridge_quad,
+                    "{} has bridge segments but packed no ROAD_STYLE_BRIDGE_SPAN quads",
+                    world.network.city_label
+                );
+            }
+            labels.push(world.network.city_label.clone());
+            signatures.push((world.network.segments.len(), world.network.junctions.len()));
+        }
+        // Riverfront, Harbor, Foothill, and Metropolis must have bridges and water features
+        for idx in [0usize, 1, 3, 4] {
+            let net = RoadNetwork::compile(&parse_osm_xml_str(&match idx {
+                0 => builtin_riverfront_bridges_osm(),
+                1 => builtin_harbor_peninsula_osm(),
+                3 => builtin_foothill_canyon_wui_osm(),
+                _ => builtin_metropolis_50k_osm(),
+            }).unwrap());
+            assert!(!net.water_features.is_empty(), "scenario {idx} missing water");
+            assert!(net.segments.iter().any(|s| s.is_bridge), "scenario {idx} missing bridge");
+        }
+        // All 5 labels are unique and non-empty
+        for i in 0..labels.len() {
+            assert!(!labels[i].is_empty());
+            for j in (i + 1)..labels.len() {
+                assert_ne!(labels[i], labels[j]);
+            }
+        }
+        assert_ne!(signatures[0], signatures[2]);
     }
 }

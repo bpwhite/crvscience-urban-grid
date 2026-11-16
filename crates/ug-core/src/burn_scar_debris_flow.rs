@@ -36,7 +36,7 @@
 
 use crate::emergency::EmergencyFacility;
 use crate::network::{RoadNetwork, Vec2};
-use crate::wildfire_alertwest_ohaz::{run_wildfire_alertwest_monte_carlo, WildfireAlertWestConfig};
+use crate::wildfire_cameras::{run_wildfire_alertwest_monte_carlo, WildfireAlertWestConfig};
 use crate::zoning::Parcel;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -513,7 +513,7 @@ pub fn run_burn_scar_debris_flow_monte_carlo(
     cfg: &BurnScarDebrisFlowConfig,
 ) -> BurnScarDebrisFlowReport {
     let t0 = Instant::now();
-    // 1. Run coupled `ALERTWest / OHAZ` wildfire module to obtain burn footprint & parcel burn severity
+    // 1. Run coupled `ALERTWest` wildfire module to obtain burn footprint & parcel burn severity
     let wf_rep = run_wildfire_alertwest_monte_carlo(net, parcels, facilities, &cfg.wildfire);
     let b = net.bounds;
     let span_x = (b.max_x - b.min_x).max(160.0);

@@ -21,7 +21,7 @@ use std::sync::Mutex;
 use serde_json::{json, Map, Value};
 use ug_core::seismic_mc::{median_pga_g_from_sa10, median_sa10_gmpe_g};
 use ug_core::{
-    builtin_corvallis_couplets_osm, idm_acceleration, parse_osm_xml_str,
+    builtin_riverfront_bridges_osm, idm_acceleration, parse_osm_xml_str,
     run_evacuation_contraflow_monte_carlo, run_seismic_monte_carlo_simulation,
     solve_mclp_fire_station_siting, AeromedicalMedevacConfig, BridgeStructuralArchetype,
     BuriedPipeMaterialClass, BusynessModel, CarrierRef, ContraflowReversalPolicy,
@@ -137,8 +137,8 @@ fn t1_idm_mobil_fundamental_diagram_and_headway_invariant() {
     let accel_brake = idm_acceleration(18.0, 18.0, 2.5, 14.0, idm.max_accel_mps2, &idm);
     assert!(accel_free > 0.8 && accel_brake < -3.0);
 
-    // 2. Sweep demand across microscopic IDM + MOBIL worlds on compiled Corvallis network
-    let xml = builtin_corvallis_couplets_osm();
+    // 2. Sweep demand across microscopic IDM + MOBIL worlds on compiled Riverfront Bridges Metro network
+    let xml = builtin_riverfront_bridges_osm();
     let net_ref = RoadNetwork::compile(&parse_osm_xml_str(&xml).expect("OSM parse failed"));
     let total_open_lane_km: f64 = net_ref
         .lanes
@@ -164,18 +164,33 @@ fn t1_idm_mobil_fundamental_diagram_and_headway_invariant() {
         world.effective_demand_per_lane_hr = demand_hr;
 
         // Seed initial lane platoon scaled proportionally to demand regime
-        let pre_target = (80.0 + demand_hr * 0.14).round() as usize;
-        world.seed_50k_megacity_crowd(pre_target.max(1_000));
-        // Trim extra spawned agents proportionally so lower demand starts lighter cleanly
-        if idx == 0 {
-            let keep = world.vehicles.len() / 5;
-            world.vehicles.truncate(keep.max(12));
-        } else if idx == 1 {
-            let keep = (world.vehicles.len() * 2) / 5;
-            world.vehicles.truncate(keep.max(24));
-        } else if idx == 2 {
-            let keep = (world.vehicles.len() * 3) / 5;
-            world.vehicles.truncate(keep.max(36));
+        let pre_target = (120.0 + demand_hr * 1.25).round() as usize;
+        world.seed_50k_megacity_crowd(pre_target.max(400));
+        // Thin extra spawned agents uniformly across all corridors so lower demand starts lighter cleanly
+        if idx <= 2 {
+            let stride = match idx {
+                0 => 6usize,
+                1 => 3,
+                _ => 2,
+            };
+            let mut k = 0usize;
+            world.vehicles.retain(|_| {
+                let keep = k % stride == 0;
+                k += 1;
+                keep
+            });
+            let mut kc = 0usize;
+            world.cyclists.retain(|_| {
+                let keep = kc % stride == 0;
+                kc += 1;
+                keep
+            });
+            let mut kp = 0usize;
+            world.pedestrians.retain(|_| {
+                let keep = kp % stride == 0;
+                kp += 1;
+                keep
+            });
         }
 
         // Warmup 12s (120 steps @ 0.1s) + sample 28s (280 steps @ 0.1s)
@@ -276,7 +291,7 @@ fn t1_idm_mobil_fundamental_diagram_and_headway_invariant() {
 
 #[test]
 fn t2_nfpa_1710_mclp_emergency_siting_optimization() {
-    let xml = builtin_corvallis_couplets_osm();
+    let xml = builtin_riverfront_bridges_osm();
     let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).expect("OSM parse failed"));
     let world = SimulationWorld::new(net);
 
@@ -383,7 +398,7 @@ fn t2_nfpa_1710_mclp_emergency_siting_optimization() {
 
 #[test]
 fn t3_cascadia_m9_seismic_fragility_and_contraflow_evacuation() {
-    let xml = builtin_corvallis_couplets_osm();
+    let xml = builtin_riverfront_bridges_osm();
     let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).expect("OSM parse failed"));
     let mut world = SimulationWorld::new(net);
     let sited = solve_mclp_fire_station_siting(

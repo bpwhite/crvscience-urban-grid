@@ -209,7 +209,7 @@ pub struct Parcel {
     pub fema_recovery_score_pct: f32,
     #[serde(default)]
     pub fema_drc_wait_min: f32,
-    /// Cached `ALERTWest` / `UOregon OHAZ` WUI wildfire burn risk (`0..=100%`) & camera viewshed
+    /// Cached `ALERTWest` WUI wildfire burn risk (`0..=100%`) & camera viewshed
     /// coverage (`0..=100%`) for GPU `WildfireAlertWestResponse` visualization.
     #[serde(default)]
     pub wildfire_burn_risk_pct: f32,
@@ -240,10 +240,118 @@ impl Parcel {
 }
 
 pub fn generate_parcels_for_bounds(bounds: BoundingBox) -> Vec<Parcel> {
+    build_parcels_filtered(bounds, None)
+}
+
+pub fn generate_parcels_for_network(net: &RoadNetwork) -> Vec<Parcel> {
+    build_parcels_filtered(net.bounds, Some(net))
+}
+
+fn point_dist_to_segment(p: Vec2, a: Vec2, b: Vec2) -> f64 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let l2 = dx * dx + dy * dy;
+    if l2 < 1e-6 {
+        return p.dist(a);
+    }
+    let t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / l2).clamp(0.0, 1.0);
+    let proj = Vec2 {
+        x: a.x + t * dx,
+        y: a.y + t * dy,
+    };
+    p.dist(proj)
+}
+
+fn point_in_polygon(p: Vec2, poly: &[Vec2]) -> bool {
+    if poly.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = poly.len() - 1;
+    for i in 0..poly.len() {
+        let pi = poly[i];
+        let pj = poly[j];
+        let intersects = ((pi.y > p.y) != (pj.y > p.y))
+            && (p.x < (pj.x - pi.x) * (p.y - pi.y) / (pj.y - pi.y + 1e-12) + pi.x);
+        if intersects {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+fn dist_to_polygon_edges(p: Vec2, poly: &[Vec2]) -> f64 {
+    let mut best = f64::INFINITY;
+    for i in 0..poly.len() {
+        let a = poly[i];
+        let b = poly[(i + 1) % poly.len()];
+        best = best.min(point_dist_to_segment(p, a, b));
+    }
+    best
+}
+
+fn make_parcel_record(pid: usize, cx: f64, cy: f64, pw: f64, ph: f64, zone: ZoneCode) -> Parcel {
+    Parcel {
+        id: pid,
+        min: Vec2 {
+            x: cx - pw * 0.5,
+            y: cy - ph * 0.5,
+        },
+        max: Vec2 {
+            x: cx + pw * 0.5,
+            y: cy + ph * 0.5,
+        },
+        center: Vec2 { x: cx, y: cy },
+        area_ha: (pw * ph) / 10_000.0,
+        zone,
+        isochrone_minutes: 6.0,
+        fire_travel_s: 120.0,
+        hospital_travel_s: 180.0,
+        response_district_unit: None,
+        response_district_station_seg: None,
+        peak_district_unit: None,
+        peak_district_station_seg: None,
+        offpeak_district_unit: None,
+        offpeak_district_station_seg: None,
+        ffe_burn_prob_pct: 0.0,
+        ffe_dry_hydrant_prob_pct: 0.0,
+        surge_red_burn_treat_min: 0.0,
+        surge_diversion_prob_pct: 0.0,
+        medevac_smoke_vis_sm: 6.0,
+        medevac_airlift_save_min: 0.0,
+        evac_stage_tier: 2,
+        evac_clearance_min: 35.0,
+        shelter_clean_air_pct: 100.0,
+        shelter_indoor_pm25: 6.0,
+        resupply_security_pct: 100.0,
+        resupply_deprivation_idx: 0.0,
+        transit_evac_cleared_pct: 100.0,
+        transit_evac_wait_min: 8.0,
+        warning_mobilized_60m_pct: 95.0,
+        warning_departure_delay_min: 12.0,
+        fema_ipaws_reach_pct: 98.0,
+        fema_esf2_lmr_pct: 98.0,
+        pod_total_access_min: 10.0,
+        pod_served_pct: 100.0,
+        usar_saved_pct: 95.0,
+        debris_blockage_tons: 0.0,
+        fema_recovery_score_pct: 96.0,
+        fema_drc_wait_min: 12.0,
+        wildfire_burn_risk_pct: 0.0,
+        wildfire_camera_vis_pct: 100.0,
+        burn_scar_runoff_mm: 4.0,
+        debris_flow_hazard_pct: 0.0,
+        wtp_water_security_pct: 100.0,
+        wtp_min_pressure_psi: 58.0,
+    }
+}
+
+fn build_parcels_filtered(bounds: BoundingBox, net_opt: Option<&RoadNetwork>) -> Vec<Parcel> {
     let span_x = (bounds.max_x - bounds.min_x - 50.0).max(120.0);
     let span_y = (bounds.max_y - bounds.min_y - 50.0).max(120.0);
-    let cols = ((span_x / 115.0).round() as usize).clamp(3, 12);
-    let rows = ((span_y / 115.0).round() as usize).clamp(3, 12);
+    let cols = ((span_x / 98.0).round() as usize).clamp(3, 14);
+    let rows = ((span_y / 98.0).round() as usize).clamp(3, 14);
     let cw = span_x / cols as f64;
     let ch = span_y / rows as f64;
     let start_x = bounds.min_x + 25.0;
@@ -252,84 +360,92 @@ pub fn generate_parcels_for_bounds(bounds: BoundingBox) -> Vec<Parcel> {
     let mid_y = 0.5 * (bounds.min_y + bounds.max_y);
     let min_span = span_x.min(span_y);
 
+    let city_lower = net_opt
+        .map(|n| n.city_label.to_ascii_lowercase())
+        .unwrap_or_default();
+    let is_radial = city_lower.contains("radial");
+    let is_harbor = city_lower.contains("harbor");
+    let is_canyon = city_lower.contains("canyon");
+
     let mut parcels = Vec::with_capacity(rows * cols);
     let mut pid = 0usize;
     for r in 0..rows {
         for c in 0..cols {
             let cx = start_x + (c as f64 + 0.5) * cw;
             let cy = start_y + (r as f64 + 0.5) * ch;
-            let pad = 13.5;
+            let center = Vec2 { x: cx, y: cy };
+            let pad = 12.0;
             let pw = (cw - pad * 2.0).max(24.0);
             let ph = (ch - pad * 2.0).max(24.0);
-            let dist = (cx - mid_x).hypot(cy - mid_y);
 
-            let zone = if dist < min_span * 0.22 {
+            let mut near_waterfront = false;
+            let mut submerged = false;
+            if let Some(net) = net_opt {
+                for wf in &net.water_features {
+                    if wf.is_polygon {
+                        let edge_d = dist_to_polygon_edges(center, &wf.pts);
+                        if point_in_polygon(center, &wf.pts) || edge_d < 16.0 {
+                            submerged = true;
+                            break;
+                        }
+                        if edge_d < 86.0 {
+                            near_waterfront = true;
+                        }
+                    } else {
+                        let d = wf
+                            .pts
+                            .windows(2)
+                            .map(|w| point_dist_to_segment(center, w[0], w[1]))
+                            .fold(f64::INFINITY, f64::min);
+                        if d < wf.half_width_m + 14.0 {
+                            submerged = true;
+                            break;
+                        }
+                        if d < wf.half_width_m + 84.0 {
+                            near_waterfront = true;
+                        }
+                    }
+                }
+            }
+            if submerged {
+                continue;
+            }
+
+            let dist = (cx - mid_x).hypot(cy - mid_y);
+            let zone = if is_radial && dist < 110.0 {
+                ZoneCode::PARK
+            } else if is_harbor && cx > 215.0 && cy > 140.0 {
+                ZoneCode::IND
+            } else if near_waterfront && (r + c) % 2 == 0 {
+                ZoneCode::PARK
+            } else if is_canyon && dist > min_span * 0.36 {
+                if (r + c) % 3 == 0 {
+                    ZoneCode::PARK
+                } else {
+                    ZoneCode::R1
+                }
+            } else if is_radial && (110.0..235.0).contains(&dist) {
                 ZoneCode::CBD
-            } else if dist < min_span * 0.36 {
+            } else if !is_radial && dist < min_span * 0.21 {
+                ZoneCode::CBD
+            } else if dist < min_span * 0.36 || near_waterfront {
                 ZoneCode::MU4
             } else if (r + c) % 5 == 0 {
                 ZoneCode::PARK
+            } else if (r + c) % 3 == 0 {
+                ZoneCode::R3
             } else if c + 1 == cols && r == 0 {
                 ZoneCode::IND
             } else {
                 ZoneCode::R1
             };
 
-            parcels.push(Parcel {
-                id: pid,
-                min: Vec2 {
-                    x: cx - pw * 0.5,
-                    y: cy - ph * 0.5,
-                },
-                max: Vec2 {
-                    x: cx + pw * 0.5,
-                    y: cy + ph * 0.5,
-                },
-                center: Vec2 { x: cx, y: cy },
-                area_ha: (pw * ph) / 10_000.0,
-                zone,
-                isochrone_minutes: 6.0,
-                fire_travel_s: 120.0,
-                hospital_travel_s: 180.0,
-                response_district_unit: None,
-                response_district_station_seg: None,
-                peak_district_unit: None,
-                peak_district_station_seg: None,
-                offpeak_district_unit: None,
-                offpeak_district_station_seg: None,
-                ffe_burn_prob_pct: 0.0,
-                ffe_dry_hydrant_prob_pct: 0.0,
-                surge_red_burn_treat_min: 0.0,
-                surge_diversion_prob_pct: 0.0,
-                medevac_smoke_vis_sm: 6.0,
-                medevac_airlift_save_min: 0.0,
-                evac_stage_tier: 2,
-                evac_clearance_min: 35.0,
-                shelter_clean_air_pct: 100.0,
-                shelter_indoor_pm25: 6.0,
-                resupply_security_pct: 100.0,
-                resupply_deprivation_idx: 0.0,
-                transit_evac_cleared_pct: 100.0,
-                transit_evac_wait_min: 8.0,
-                warning_mobilized_60m_pct: 95.0,
-                warning_departure_delay_min: 12.0,
-                fema_ipaws_reach_pct: 98.0,
-                fema_esf2_lmr_pct: 98.0,
-                pod_total_access_min: 10.0,
-                pod_served_pct: 100.0,
-                usar_saved_pct: 95.0,
-                debris_blockage_tons: 0.0,
-                fema_recovery_score_pct: 96.0,
-                fema_drc_wait_min: 12.0,
-                wildfire_burn_risk_pct: 0.0,
-                wildfire_camera_vis_pct: 100.0,
-                burn_scar_runoff_mm: 4.0,
-                debris_flow_hazard_pct: 0.0,
-                wtp_water_security_pct: 100.0,
-                wtp_min_pressure_psi: 58.0,
-            });
+            parcels.push(make_parcel_record(pid, cx, cy, pw, ph, zone));
             pid += 1;
         }
+    }
+    if parcels.is_empty() {
+        parcels.push(make_parcel_record(0, mid_x, mid_y, 60.0, 60.0, ZoneCode::MU4));
     }
     parcels
 }

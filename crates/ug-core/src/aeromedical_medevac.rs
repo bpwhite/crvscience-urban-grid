@@ -28,9 +28,8 @@
 //!   (Cai et al. 2024, `https://www.researchgate.net/publication/371647186_Measurement_of_Fugitive_Particulate_Matter_Emission_Current_State_and_Trends`).
 //! - Post-Earthquake Helicopter Emergency Medical Services (`HEMS`, `https://pmc.ncbi.nlm.nih.gov/articles/PMC6637809/`),
 //!   Western Region Burn Disaster Consortium (`WRBDC`,
-//!   `https://files.asprtracie.hhs.gov/documents/wrbdc-2024-burn-mass-casualty-operations-plan.pdf`),
-//!   and Oregon Health Authority *State Mass Burn Casualty Plan*
-//!   (`https://www.oregon.gov/oha/PH/PROVIDERPARTNERRESOURCES/EMS/EMSFORCHILDREN/Documents/Oregon-Mass-Burn-Casualty-Plan.pdf`).
+//!   `https://files.asprtracie.hhs.gov/documents/wrbdc-2024-burn-mass-casualty-operations-plan.pdf`)
+//!   regional mass burn casualty transfer protocol.
 
 use crate::emergency::{EmergencyFacility, EmergencyFacilityKind, EvpConfig};
 use crate::ffe_conflagration::{
@@ -235,7 +234,7 @@ pub enum HelipadStructuralType {
     HospitalSurfaceGradePad,
     /// Pre-designated `PARK` / municipal greenbelt emergency casualty airlift Landing Zone (`LZ`).
     DesignatedParkEmergencyLz,
-    /// Off-map Western Region Burn Disaster Consortium (`WRBDC`) tertiary burn center hub (e.g. Portland / Seattle).
+    /// Off-map Western Region Burn Disaster Consortium (`WRBDC`) tertiary burn center hub.
     ExternalRegionalBurnHub,
 }
 
@@ -264,7 +263,7 @@ pub struct AeromedicalMedevacConfig {
     pub ambient_visibility_sm: f64,
     /// Retrofits hospital rooftop pads to seismic `SPC-5` + surface grade backup pads & pre-designates Park LZs.
     pub helipad_seismic_and_ground_lz_hardening: bool,
-    /// Activates interstate/intrastate `WRBDC` regional burn-center transfer mutual aid (Portland 128 km / Seattle 365 km).
+    /// Activates interstate/intrastate `WRBDC` regional burn-center transfer mutual aid (128 km / 365 km hubs).
     pub wrbdc_regional_burn_mutual_aid: bool,
 }
 
@@ -529,7 +528,7 @@ pub fn run_aeromedical_medevac_monte_carlo(
     // Build helipad roster:
     // - 1 helipad per hospital (`HospitalSurfaceGradePad` if `helipad_seismic_and_ground_lz_hardening` or `L1`/`MFH`, else `HospitalRooftopElevated`)
     // - Up to 2 `DesignatedParkEmergencyLz` pads on `ZoneCode::PARK` parcels (west & east river banks)
-    // - Up to 2 `ExternalRegionalBurnHub` nodes (`Oregon Burn Center — Portland 128 km`, `UW Harborview — Seattle 365 km`)
+    // - Up to 2 `ExternalRegionalBurnHub` nodes (`Regional Burn Center — North 128 km`, `Secondary Regional Burn Hub — 365 km`)
     #[derive(Clone)]
     struct PadSpec {
         pad_id: usize,
@@ -590,10 +589,10 @@ pub fn run_aeromedical_medevac_monte_carlo(
         }
     }
 
-    let portland_pad_idx = pads.len();
+    let regional_hub_idx = pads.len();
     pads.push(PadSpec {
-        pad_id: portland_pad_idx,
-        name: "Oregon Burn Center (Legacy Emanuel, Portland 128 km)".to_string(),
+        pad_id: regional_hub_idx,
+        name: "Regional Burn Center (Metro North Hub 128 km)".to_string(),
         pad_type: HelipadStructuralType::ExternalRegionalBurnHub,
         host_hosp: None,
         pos: Vec2 {
@@ -602,16 +601,16 @@ pub fn run_aeromedical_medevac_monte_carlo(
         },
         ext_dist_km: 128.0,
         ext_burn_beds: if cfg.wrbdc_regional_burn_mutual_aid {
-            24.0 // Oregon Mass Burn Casualty Plan 24-patient surge capacity
+            24.0 // WRBDC Regional Mass Burn Casualty Plan 24-patient surge capacity
         } else {
             0.0
         },
     });
 
-    let seattle_pad_idx = pads.len();
+    let secondary_hub_idx = pads.len();
     pads.push(PadSpec {
-        pad_id: seattle_pad_idx,
-        name: "UW Harborview Regional Burn Ctr (WRBDC Seattle 365 km)".to_string(),
+        pad_id: secondary_hub_idx,
+        name: "WRBDC Secondary Regional Burn Center (365 km)".to_string(),
         pad_type: HelipadStructuralType::ExternalRegionalBurnHub,
         host_hosp: None,
         pos: Vec2 {
@@ -918,8 +917,8 @@ pub fn run_aeromedical_medevac_monte_carlo(
     }
 
     // Enumerate candidate secondary burn-transfer arcs:
-    // Every non-L1 hospital pad `h_src` -> `[L1 Burn Center pad 0, Portland Burn Hub, Seattle Burn Hub]`
-    // plus `L1 Burn Center pad 0` -> `[Portland Burn Hub, Seattle Burn Hub]` when local L1 overflows!
+    // Every non-L1 hospital pad `h_src` -> `[L1 Burn Center pad 0, Regional Burn Hub, Secondary Burn Hub]`
+    // plus `L1 Burn Center pad 0` -> `[Regional Burn Hub, Secondary Burn Hub]` when local L1 overflows!
     let mut arc_defs: Vec<(usize, usize, bool, f64)> = Vec::new();
     for hi in 0..n_hosp {
         if hospitals[hi].designation == HospitalTraumaDesignation::MobileFieldHospital {
@@ -929,8 +928,8 @@ pub fn run_aeromedical_medevac_monte_carlo(
             let d_loc_km = (pads[hi].pos.dist(pads[0].pos) / 1000.0).max(2.5);
             arc_defs.push((hi, 0, false, d_loc_km));
         }
-        arc_defs.push((hi, portland_pad_idx, true, 128.0));
-        arc_defs.push((hi, seattle_pad_idx, true, 365.0));
+        arc_defs.push((hi, regional_hub_idx, true, 128.0));
+        arc_defs.push((hi, secondary_hub_idx, true, 365.0));
     }
     let n_arcs = arc_defs.len();
 
@@ -1368,8 +1367,8 @@ pub fn run_aeromedical_medevac_monte_carlo(
 
             // 5. Simulate 15-minute surge waves for primary scene airlifts & secondary inter-hospital burn transfers
             let mut local_burn_occ = vec![0.0; n_hosp];
-            let mut ext_portland_rem = pads[portland_pad_idx].ext_burn_beds;
-            let mut ext_seattle_rem = pads[seattle_pad_idx].ext_burn_beds;
+            let mut ext_regional_rem = pads[regional_hub_idx].ext_burn_beds;
+            let mut ext_secondary_rem = pads[secondary_hub_idx].ext_burn_beds;
 
             let mut burn_crit_tot = 0.0;
             let mut burn_sec_req = 0.0;
@@ -1412,7 +1411,7 @@ pub fn run_aeromedical_medevac_monte_carlo(
                     let (v_sm, c_ft) = if pads[pid].pad_type
                         == HelipadStructuralType::ExternalRegionalBurnHub
                     {
-                        // External WRBDC hubs (Portland/Seattle) are outside local FFE smoke plume
+                        // External WRBDC hubs are outside local FFE smoke plume
                         (cfg.ambient_visibility_sm.max(3.5), cfg.ambient_ceiling_ft.max(1200.0))
                     } else {
                         let pm = smoke_pm25_at(pads[pid].pos, t_min);
@@ -1535,22 +1534,22 @@ pub fn run_aeromedical_medevac_monte_carlo(
 
                     // Candidate receiving Burn Centers in priority order:
                     // 1) Local Level-I Burn Center (`pad 0`, if `hi != 0` and `pad 0` still has free burn beds)
-                    // 2) Oregon Burn Center — Portland (`128 km`, `WRBDC`)
-                    // 3) UW Harborview Burn Center — Seattle (`365 km`, `WRBDC`)
+                    // 2) Regional Burn Center (`128 km`, `WRBDC`)
+                    // 3) WRBDC Secondary Regional Burn Center (`365 km`, `WRBDC`)
                     let mut dest_candidates: Vec<(usize, bool, f64)> = Vec::new();
                     if hi != 0 && (h_burn_beds[0] - local_burn_occ[0]) > 0.05 {
                         let d_km = (pads[hi].pos.dist(pads[0].pos) / 1000.0).max(2.5);
                         dest_candidates.push((0, false, d_km));
                     }
                     if cfg.wrbdc_regional_burn_mutual_aid {
-                        dest_candidates.push((portland_pad_idx, true, 128.0));
-                        dest_candidates.push((seattle_pad_idx, true, 365.0));
+                        dest_candidates.push((regional_hub_idx, true, 128.0));
+                        dest_candidates.push((secondary_hub_idx, true, 365.0));
                     } else if hi != 0 {
                         let d_km = (pads[hi].pos.dist(pads[0].pos) / 1000.0).max(2.5);
                         dest_candidates.push((0, false, d_km));
                     } else {
                         // Without WRBDC mutual aid, local L1 overflow must wait ~5h for regional ground convoy
-                        dest_candidates.push((portland_pad_idx, true, 128.0));
+                        dest_candidates.push((regional_hub_idx, true, 128.0));
                     }
 
                     for (dst_pad, is_ext, dist_km) in dest_candidates {
@@ -1559,21 +1558,21 @@ pub fn run_aeromedical_medevac_monte_carlo(
                         }
                         let dst_avail = if dst_pad == 0 {
                             (h_burn_beds[0] - local_burn_occ[0]).max(0.0)
-                        } else if dst_pad == portland_pad_idx {
+                        } else if dst_pad == regional_hub_idx {
                             if cfg.wrbdc_regional_burn_mutual_aid {
-                                ext_portland_rem.max(0.0)
+                                ext_regional_rem.max(0.0)
                             } else {
                                 0.0 // Forces ground convoy delay if mutual-aid air bridge disabled
                             }
                         } else if cfg.wrbdc_regional_burn_mutual_aid {
-                            ext_seattle_rem.max(0.0)
+                            ext_secondary_rem.max(0.0)
                         } else {
                             0.0
                         };
 
                         let chunk = if dst_avail > 0.05 {
                             need_xfer.min(dst_avail)
-                        } else if dst_pad == seattle_pad_idx || !cfg.wrbdc_regional_burn_mutual_aid {
+                        } else if dst_pad == secondary_hub_idx || !cfg.wrbdc_regional_burn_mutual_aid {
                             need_xfer
                         } else {
                             continue;
@@ -1612,10 +1611,10 @@ pub fn run_aeromedical_medevac_monte_carlo(
 
                         if dst_pad == 0 {
                             local_burn_occ[0] += chunk;
-                        } else if dst_pad == portland_pad_idx {
-                            ext_portland_rem = (ext_portland_rem - chunk).max(0.0);
+                        } else if dst_pad == regional_hub_idx {
+                            ext_regional_rem = (ext_regional_rem - chunk).max(0.0);
                         } else {
-                            ext_seattle_rem = (ext_seattle_rem - chunk).max(0.0);
+                            ext_secondary_rem = (ext_secondary_rem - chunk).max(0.0);
                         }
 
                         if air_sent > 1e-9 {

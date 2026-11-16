@@ -29,7 +29,7 @@ impl Default for TransitPolicy {
     fn default() -> Self {
         Self {
             headway_min: 12.0,
-            fare_usd: 0.0, // Fare-free municipal bus baseline (e.g. Corvallis Transit System)
+            fare_usd: 0.0, // Fare-free municipal bus baseline (e.g. Metro Transit System)
             cordon_pricing_usd: 2.0,
             couple_gravity_demand: true,
         }

@@ -1,0 +1,6 @@
+route_id,service_id,trip_id,trip_headsign,direction_id
+R1_TRUNK,WKDAY,T_R1_SB_01,"Southbound via Westbank Couplet SB",0
+R1_TRUNK,WKDAY,T_R1_NB_01,"Northbound via Westbank Couplet NB",1
+R2_CROSS,WKDAY,T_R2_EB_01,"Eastbound via Central Arch Bridge",0
+R2_CROSS,WKDAY,T_R2_WB_01,"Westbound via North Bridge Approach",1
+R5_LOOP,WKDAY,T_R5_EB_01,"Westbank Transit Ctr to Eastbank Bridges",0

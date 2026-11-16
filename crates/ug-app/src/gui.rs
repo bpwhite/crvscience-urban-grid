@@ -27,7 +27,9 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use ug_core::{
-    build_heatmap_rgba, builtin_braess_diamond_osm, convert_network_candidate_roundabouts,
+    build_heatmap_rgba, builtin_braess_diamond_osm, builtin_foothill_canyon_wui_osm,
+    builtin_harbor_peninsula_osm, builtin_metropolis_50k_osm, builtin_radial_ring_plazas_osm,
+    builtin_riverfront_bridges_osm, builtin_roundabout_osm, convert_network_candidate_roundabouts,
     run_parallel_batch_experiment_with_progress, BatchControlRegime, BatchExperimentConfig,
     BatchExperimentReport, BatchProgressTracker, EditCategory, EmergencyFacilityKind,
     BusynessModel, DisruptionInterdictionDepth, HypercubeConfig, HypercubeQueueDiscipline,
@@ -36,36 +38,31 @@ use ug_core::{
     CommodityResupplyConfig, CommodityResupplyReport, ContraflowReversalPolicy,
     DebrisAndUsarPolicy, DepartureStagingPolicy, DiurnalDispatchRegime, EocIpaswUplinkMode,
     FemaAssetKind, FemaCommsConfig, FemaCommsPosture, FemaCommsReport,
-    AlertWestOhazCameraKind, FemaGsbDrcTdmsConfig, FemaGsbDrcTdmsReport,
     FemaInsaragMarking, FemaIsbPodsConfig, FemaIsbPodsReport, FemaPodClassification,
-    FemaRecoveryExecutionPolicy, FemaRecoverySiteKind, FemaUsarDebrisConfig, FemaUsarDebrisReport,
-    IpaswPodRoutingPolicy, builtin_oregon_ohaz_alertwest_feed_json, load_alertwest_ohaz_feed_path,
+    FemaGsbDrcTdmsConfig, FemaGsbDrcTdmsReport, FemaRecoveryExecutionPolicy,
+    FemaRecoverySiteKind, FemaUsarDebrisConfig, FemaUsarDebrisReport, IpaswPodRoutingPolicy,
+    builtin_western_wildfire_camera_feed_json, load_wildfire_camera_feed_path,
     BaerWatershedMitigationPolicy, BurnScarDebrisFlowConfig, BurnScarDebrisFlowReport,
-    CulvertHydraulicState, UsgsCombinedHazardRating,
-    WaterSupplyAssetKind, WtpCoagulantAndIntakePolicy, WtpTurbidityStorageConfig,
-    WtpTurbidityStorageReport,
-    WildfireAlertWestConfig, WildfireAlertWestReport, WildfireDetectionAndAttackPosture,
-    WuiFuelModel,
-    IsbReplenishmentPolicy, ReliefCommodityKind,
-    ResupplyDispatchPolicy, TelecomBackupPowerStandard, TransitDispatchStrategy,
-    TransitEvacuationConfig, TransitEvacuationReport, WarningMobilizationConfig,
-    WarningMobilizationReport,
-    DiurnalProfileConfig, DiurnalRedistrictingReport, DiurnalWindowPreset,
-    EmergencySheltersConfig, EmergencySheltersReport, EvacuationContraflowConfig,
-    EvacuationContraflowReport, EvacuationStagingStrategy, ShelterSitingAndRoutingPolicy,
-    FfeConfig, FfeIgnitionModel, FfeMonteCarloReport, HelipadStructuralType, HospitalSurgeConfig,
+    CulvertHydraulicState, UsgsCombinedHazardRating, WaterSupplyAssetKind,
+    WtpCoagulantAndIntakePolicy, WtpTurbidityStorageConfig, WtpTurbidityStorageReport,
+    WildfireAlertWestConfig, WildfireAlertWestReport, WildfireCameraKind,
+    WildfireDetectionAndAttackPosture, WuiFuelModel, IsbReplenishmentPolicy,
+    ReliefCommodityKind, ResupplyDispatchPolicy, TelecomBackupPowerStandard,
+    TransitDispatchStrategy, TransitEvacuationConfig, TransitEvacuationReport,
+    WarningMobilizationConfig, WarningMobilizationReport, DiurnalProfileConfig,
+    DiurnalRedistrictingReport, DiurnalWindowPreset, EmergencySheltersConfig,
+    EmergencySheltersReport, EvacuationContraflowConfig, EvacuationContraflowReport,
+    EvacuationStagingStrategy, ShelterSitingAndRoutingPolicy, FfeConfig, FfeIgnitionModel,
+    FfeMonteCarloReport, HelipadStructuralType, HospitalSurgeConfig,
     HospitalSurgeMonteCarloReport, HospitalTraumaDesignation, HypercubeReport,
     MclpOptimizationReport, MclpSitingConfig, MedevacAvionicsRegime, RedistrictingConfig,
-    RotorcraftAirframeClass,
-    RedistrictingObjectiveMode, RedistrictingReport,
-    MclpWeightingMode, SitingObjectiveModel,
-    BridgeStructuralArchetype, BuriedPipeMaterialClass, PipelineFragilityLaw,
-    ResilienceStressConfig, ResilienceStressReport, sample_ala_hazus_pgv_curves,
-    sample_hazus_restoration_curves, SeismicMonteCarloReport, SeismicScenarioConfig,
-    builtin_corvallis_couplets_osm, builtin_megacity_supergrid_osm, builtin_roundabout_osm,
-    pack_agents_into, pack_road_quads_into, parse_osm_xml_str, ControlMode, GpuCameraUniform,
-    BoardingFareMode, BusCoachSpec, GpuPlumeComputeUniform, GpuStagingArena, HeatmapLayer,
-    adjust_segment_lane_count, convert_junction_to_roundabout, draw_road_segment,
+    RotorcraftAirframeClass, RedistrictingObjectiveMode, RedistrictingReport, MclpWeightingMode,
+    SitingObjectiveModel, BridgeStructuralArchetype, BuriedPipeMaterialClass,
+    PipelineFragilityLaw, ResilienceStressConfig, ResilienceStressReport,
+    sample_ala_hazus_pgv_curves, sample_hazus_restoration_curves, SeismicMonteCarloReport,
+    SeismicScenarioConfig, pack_agents_into, pack_road_quads_into, parse_osm_xml_str, ControlMode,
+    GpuCameraUniform, BoardingFareMode, BusCoachSpec, GpuPlumeComputeUniform, GpuStagingArena,
+    HeatmapLayer, adjust_segment_lane_count, convert_junction_to_roundabout, draw_road_segment,
     hit_test_junction, hit_test_segment, preview_draw_snap, MpPhaseId, NewRoadSpec,
     PlumePhysicsParams, RoadNetwork, SimulationWorld, SnapTarget, UtilityAssetKind,
     UtilityHeatmapSublayer, Vec2 as WorldVec2, ZoneCode,
@@ -116,7 +113,7 @@ enum StressSubMode {
     WtpTurbidityStorage,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum GuiScreen {
     MainEntranceHub,
     ActiveWorkbench,
@@ -205,6 +202,7 @@ struct ActiveGuiSweepHandle {
 
 pub struct UrbanGridGuiApp {
     world: SimulationWorld,
+    active_city_name: String,
     gpu_ready: bool,
     staging: GpuStagingArena,
     paused: bool,
@@ -363,25 +361,26 @@ impl UrbanGridGuiApp {
             gpu_ready = true;
         }
 
-        if world.total_active_agents() < 2_000 {
-            for _ in 0..240 {
-                world.step(0.05);
-            }
+        // Seed staged ready traffic cleanly at t = 0.0 s without running physics ahead of user launch.
+        if world.total_active_agents() < 200 {
+            world.seed_initial_traffic(280);
         }
         let b = world.network.bounds;
         let span = (b.max_x - b.min_x).max(b.max_y - b.min_y).max(200.0);
         let init_zoom = (760.0 / span).clamp(0.32, 2.2);
         let selected_segment = world.watched_segment_id;
         let target_crowd_slider = world.total_active_agents().max(52_000);
+        let active_city_name = world.network.city_label.clone();
 
         Self {
             cam_x: 0.5 * (b.min_x + b.max_x),
             cam_y: 0.5 * (b.min_y + b.max_y),
             cam_zoom: init_zoom,
             world,
+            active_city_name,
             gpu_ready,
             staging: GpuStagingArena::new(),
-            paused: false,
+            paused: true,
             speed_scale: 1.0,
             physics_accum_s: 0.0,
             plume_params: PlumePhysicsParams::default(),
@@ -474,8 +473,8 @@ impl UrbanGridGuiApp {
             wildfire_cfg: WildfireAlertWestConfig::default(),
             latest_wildfire_report: None,
             wildfire_ab_summary: None,
-            wildfire_feed_path: "data/alertwest_ohaz_oregon_cameras.json".to_string(),
-            wildfire_csv_path: "exports/alertwest_ohaz_wildfire_cameras.csv".to_string(),
+            wildfire_feed_path: "data/western_wildfire_cameras.json".to_string(),
+            wildfire_csv_path: "exports/western_wildfire_cameras.csv".to_string(),
             debris_flow_cfg: BurnScarDebrisFlowConfig::default(),
             latest_debris_flow_report: None,
             debris_flow_ab_summary: None,
@@ -671,9 +670,7 @@ impl UrbanGridGuiApp {
                 w.seed_50k_megacity_crowd(crowd_n);
                 self.layer = HeatmapLayer::AgentDensity;
             } else {
-                for _ in 0..240 {
-                    w.step(0.05);
-                }
+                w.seed_initial_traffic(280);
             }
             let b = w.network.bounds;
             let span = (b.max_x - b.min_x).max(b.max_y - b.min_y).max(200.0);
@@ -721,6 +718,8 @@ impl UrbanGridGuiApp {
             self.physics_accum_s = 0.0;
             self.plume_reset_pending = true;
             self.heatmap_dirty = true;
+            self.paused = true;
+            self.active_city_name = w.network.city_label.clone();
             self.world = w;
         }
     }
@@ -746,8 +745,56 @@ impl UrbanGridGuiApp {
         }
         self.tool = tool;
         self.draw_start_world = None;
+        self.paused = true;
         self.screen = GuiScreen::ActiveWorkbench;
         self.command_palette_open = false;
+    }
+
+    fn enter_workbench_running(
+        &mut self,
+        tab: DockTab,
+        sub_mode: Option<StressSubMode>,
+        layer: HeatmapLayer,
+        tool: ViewportTool,
+    ) {
+        self.enter_workbench(tab, sub_mode, layer, tool);
+        self.paused = false;
+    }
+
+    fn active_scenario_mode_label(&self) -> &'static str {
+        if self.tab == DockTab::ResilienceStress {
+            match self.stress_sub_mode {
+                StressSubMode::DeterministicCutSets => "N-1 / N-2 Bridge & Corridor Cut-Sets",
+                StressSubMode::SeismicMonteCarlo => "Seismic Bridge & Buried Pipe Monte Carlo",
+                StressSubMode::FireFollowingQuake => "Fire-Following-Earthquake Conflagration",
+                StressSubMode::HospitalTraumaSurge => "Hospital Trauma & Regional Burn Surge",
+                StressSubMode::AeromedicalMedevac => "Rotary-Wing Medevac & Smoke Envelopes",
+                StressSubMode::EvacuationContraflow => "Staged Evacuation & Arterial Contraflow",
+                StressSubMode::TransitBusEvacuation => "GTFS Bus+EMS Contraflow Evacuation",
+                StressSubMode::EmergencyShelters => "Clean-Air Shelters & HEPA Filtration",
+                StressSubMode::CommodityResupply => "Multi-Day Water/Diesel/O2 Resupply VRP",
+                StressSubMode::WarningMobilization => "Cell Blackout, WEA/Siren & Mobilization",
+                StressSubMode::FemaCommsArchitecture => "FEMA IPAWS & MERS ESF-2 Comms",
+                StressSubMode::FemaIsbPods => "FEMA ISB & C-POD Supply Queues",
+                StressSubMode::FemaUsarDebris => "FEMA Type-1 US&R Grids & Debris Push",
+                StressSubMode::FemaGsbDrcTdms => "USACE 249th GSB, TDMS & DRC Queues",
+                StressSubMode::WildfireAlertWestResponse => "ALERTWest AI PTZ & WUI Suppression",
+                StressSubMode::BurnScarDebrisFlow => "Post-Fire Debris Flow & Culverts",
+                StressSubMode::WtpTurbidityStorage => "WTP Ash/Turbidity & Storage Drawdown",
+            }
+        } else {
+            match self.layer {
+                HeatmapLayer::Zoning => "Urban Land Use & Microsimulation",
+                HeatmapLayer::Isochrone15Min => "15-Minute Multimodal Access Isochrone",
+                HeatmapLayer::EmergencyResponse4Min => "4-Minute EMS Coverage (NFPA 1710)",
+                HeatmapLayer::ResponseDistricts => "Carter-Larson Response Districts",
+                HeatmapLayer::UtilityLifelines => "Coupled Electric / Water / Sewer Grids",
+                HeatmapLayer::VspEmissions => "VSP Vehicle Emissions Advection Plume",
+                HeatmapLayer::AgentDensity => "50k+ Agent Multimodal Density",
+                HeatmapLayer::Off => "Clean Network Asphalt & Water Channels",
+                _ => "Resilience & Hazard Analysis",
+            }
+        }
     }
 
     fn render_command_palette(&mut self, ctx: &egui::Context) {
@@ -972,8 +1019,8 @@ impl UrbanGridGuiApp {
                         ViewportTool::Inspect,
                     ),
                     (
-                        "ALERTWest & OHAZ WUI",
-                        "ALERTWest + UOregon OHAZ PTZ Cameras, Starlink MDUs & NWCG Wildfire Suppression",
+                        "ALERTWest Wildfire WUI",
+                        "ALERTWest AI PTZ Cameras, Starlink MDUs & NWCG Wildfire Suppression",
                         DockTab::ResilienceStress,
                         Some(StressSubMode::WildfireAlertWestResponse),
                         HeatmapLayer::WildfireAlertWestResponse,
@@ -1059,21 +1106,19 @@ impl UrbanGridGuiApp {
                                         );
                                         ui.label(
                                             egui::RichText::new(
-                                                "50k+ wgpu Traffic  |  Complete FEMA Suite (IPAWS/MERS, ISB/PODs, US&R, 249th GSB, TDMS, DRC/MRIC)  |  ALERTWest & UOregon OHAZ Wildfire",
+                                                "50k+ wgpu Traffic  |  Complete FEMA Suite (IPAWS/MERS, ISB/PODs, US&R, 249th GSB, TDMS, DRC/MRIC)  |  ALERTWest WUI Wildfire",
                                             )
                                             .color(Color32::from_rgb(148, 163, 184)),
                                         );
                                         ui.add_space(4.0);
-                                        let fps = (1000.0 / self.ema_frame_ms.max(0.5)).min(999.0);
                                         ui.monospace(format!(
-                                            "Active Network: {} road segs | {} junctions | {} parcels | {} live agents | {} fire/hosp | wgpu {} ({:.0} FPS)",
+                                            "Staged City: {} | {} road segs | {} junctions | {} parcels | {} staged agents | {}",
+                                            self.active_city_name,
                                             self.world.network.segments.len(),
                                             self.world.network.junctions.len(),
                                             self.world.parcels.len(),
                                             self.world.total_active_agents(),
-                                            self.world.emergency_facilities.len(),
-                                            if self.gpu_ready { "READY" } else { "INIT" },
-                                            fps
+                                            if self.paused { "PAUSED — Ready (Zero Background CPU)" } else { "RUNNING" },
                                         ));
                                     });
 
@@ -1082,18 +1127,34 @@ impl UrbanGridGuiApp {
                                         |ui| {
                                             if ui
                                                 .button(
-                                                    egui::RichText::new(
-                                                        "  Enter Live GPU Map Workbench  ->  ",
-                                                    )
-                                                    .size(15.0)
-                                                    .strong()
-                                                    .color(Color32::from_rgb(16, 185, 129)),
+                                                    egui::RichText::new("  ▶ Launch & Run  ")
+                                                        .size(14.5)
+                                                        .strong()
+                                                        .color(Color32::from_rgb(52, 211, 153)),
                                                 )
                                                 .on_hover_text(
-                                                    "Open the interactive 120+ FPS wgpu map viewport & inspector dock (F1 / Home returns here anytime)",
+                                                    "Open the wgpu map viewport and start simulation immediately",
                                                 )
                                                 .clicked()
                                             {
+                                                self.paused = false;
+                                                self.screen = GuiScreen::ActiveWorkbench;
+                                            }
+                                            if ui
+                                                .button(
+                                                    egui::RichText::new(
+                                                        "  Enter Workbench (Paused)  ",
+                                                    )
+                                                    .size(14.5)
+                                                    .strong()
+                                                    .color(Color32::from_rgb(250, 204, 21)),
+                                                )
+                                                .on_hover_text(
+                                                    "Open the wgpu map viewport paused at t=0.0s (press Space or ▶ Run to start)",
+                                                )
+                                                .clicked()
+                                            {
+                                                self.paused = true;
                                                 self.screen = GuiScreen::ActiveWorkbench;
                                             }
                                             if ui
@@ -1146,64 +1207,205 @@ impl UrbanGridGuiApp {
                                             self.selected_junction = 0;
                                             self.selected_segment = loaded_world.watched_segment_id;
                                             self.plume_params = loaded_plume;
+                                            self.active_city_name = loaded_world.network.city_label.clone();
                                             self.world = loaded_world;
                                             self.heatmap_dirty = true;
                                             self.plume_reset_pending = true;
+                                            self.paused = true;
                                             self.screen = GuiScreen::ActiveWorkbench;
                                         }
                                     }
                                 });
                                 ui.add_space(6.0);
-                                ui.columns(4, |cols| {
+                                ui.columns(5, |cols| {
                                     cols[0].vertical(|ui| {
-                                        ui.strong("Corvallis Arterial Couplets");
+                                        ui.strong("1. Riverfront Bridges Metro");
                                         ui.small(
-                                            "Two-way arterials, 1-way downtown couplets, river bridges & GTFS transit.",
+                                            "S-curve river channel, 4 bridges, 1-way couplets, West/East districts & riverside parks.",
                                         );
-                                        if ui.button("Load Corvallis & Enter").clicked() {
-                                            self.load_builtin(&builtin_corvallis_couplets_osm(), None);
-                                            self.screen = GuiScreen::ActiveWorkbench;
-                                        }
+                                        ui.horizontal_wrapped(|ui| {
+                                            if ui.button("Open (Paused)").clicked() {
+                                                self.load_builtin(&builtin_riverfront_bridges_osm(), None);
+                                                self.enter_workbench(
+                                                    DockTab::SignalsAndRoads,
+                                                    None,
+                                                    HeatmapLayer::Zoning,
+                                                    ViewportTool::Inspect,
+                                                );
+                                            }
+                                            if ui
+                                                .button(
+                                                    egui::RichText::new("▶ Launch & Run")
+                                                        .color(Color32::from_rgb(16, 185, 129)),
+                                                )
+                                                .clicked()
+                                            {
+                                                self.load_builtin(&builtin_riverfront_bridges_osm(), None);
+                                                self.enter_workbench_running(
+                                                    DockTab::SignalsAndRoads,
+                                                    None,
+                                                    HeatmapLayer::Zoning,
+                                                    ViewportTool::Inspect,
+                                                );
+                                            }
+                                        });
                                     });
                                     cols[1].vertical(|ui| {
-                                        ui.strong("Modern 2-Lane Roundabout");
+                                        ui.strong("2. Harbor Bay & Peninsula");
                                         ui.small(
-                                            "Curved circulatory yield ring, approach flares & signalized crosswalks.",
+                                            "Curved bay shoreline, 35-deg coastal boulevard, port terminal & 2 bay bridges.",
                                         );
-                                        if ui.button("Load Roundabout & Enter").clicked() {
-                                            self.load_builtin(&builtin_roundabout_osm(), None);
-                                            self.screen = GuiScreen::ActiveWorkbench;
-                                        }
+                                        ui.horizontal_wrapped(|ui| {
+                                            if ui.button("Open (Paused)").clicked() {
+                                                self.load_builtin(&builtin_harbor_peninsula_osm(), None);
+                                                self.enter_workbench(
+                                                    DockTab::SignalsAndRoads,
+                                                    None,
+                                                    HeatmapLayer::Zoning,
+                                                    ViewportTool::Inspect,
+                                                );
+                                            }
+                                            if ui
+                                                .button(
+                                                    egui::RichText::new("▶ Launch & Run")
+                                                        .color(Color32::from_rgb(16, 185, 129)),
+                                                )
+                                                .clicked()
+                                            {
+                                                self.load_builtin(&builtin_harbor_peninsula_osm(), None);
+                                                self.enter_workbench_running(
+                                                    DockTab::SignalsAndRoads,
+                                                    None,
+                                                    HeatmapLayer::Zoning,
+                                                    ViewportTool::Inspect,
+                                                );
+                                            }
+                                        });
                                     });
                                     cols[2].vertical(|ui| {
-                                        ui.strong("Braess Paradox Network");
+                                        ui.strong("3. Radial Ring & Star Plazas");
                                         ui.small(
-                                            "4-node equilibrium diamond for Max-Pressure, road-diet & cut-set tests.",
+                                            "3 concentric beltways, 8 radial avenues, civic canal, central park & roundabout plazas.",
                                         );
-                                        if ui.button("Load Braess & Enter").clicked() {
-                                            self.load_builtin(&builtin_braess_diamond_osm(), None);
-                                            self.screen = GuiScreen::ActiveWorkbench;
-                                        }
+                                        ui.horizontal_wrapped(|ui| {
+                                            if ui.button("Open (Paused)").clicked() {
+                                                self.load_builtin(&builtin_radial_ring_plazas_osm(), None);
+                                                self.enter_workbench(
+                                                    DockTab::SignalsAndRoads,
+                                                    None,
+                                                    HeatmapLayer::Zoning,
+                                                    ViewportTool::Inspect,
+                                                );
+                                            }
+                                            if ui
+                                                .button(
+                                                    egui::RichText::new("▶ Launch & Run")
+                                                        .color(Color32::from_rgb(16, 185, 129)),
+                                                )
+                                                .clicked()
+                                            {
+                                                self.load_builtin(&builtin_radial_ring_plazas_osm(), None);
+                                                self.enter_workbench_running(
+                                                    DockTab::SignalsAndRoads,
+                                                    None,
+                                                    HeatmapLayer::Zoning,
+                                                    ViewportTool::Inspect,
+                                                );
+                                            }
+                                        });
                                     });
                                     cols[3].vertical(|ui| {
-                                        ui.strong("50k+ Megacity GPU Supergrid");
+                                        ui.strong("4. Foothill Canyon WUI");
                                         ui.small(
-                                            "12x12 supergrid seeded with 52,000+ SDF GPU vehicles, bikes & peds.",
+                                            "Curved canyon roads, mountain creek bridges, WUI ridge loops & 2 evac highways.",
                                         );
-                                        if ui
-                                            .button(
-                                                egui::RichText::new("Load 50k+ GPU Grid & Enter")
-                                                    .color(Color32::from_rgb(56, 189, 248)),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.load_builtin(
-                                                &builtin_megacity_supergrid_osm(12, 12),
-                                                Some(self.target_crowd_slider.max(52_000)),
-                                            );
-                                            self.screen = GuiScreen::ActiveWorkbench;
-                                        }
+                                        ui.horizontal_wrapped(|ui| {
+                                            if ui.button("Open (Paused)").clicked() {
+                                                self.load_builtin(&builtin_foothill_canyon_wui_osm(), None);
+                                                self.enter_workbench(
+                                                    DockTab::ResilienceStress,
+                                                    Some(StressSubMode::WildfireAlertWestResponse),
+                                                    HeatmapLayer::WildfireAlertWestResponse,
+                                                    ViewportTool::Inspect,
+                                                );
+                                            }
+                                            if ui
+                                                .button(
+                                                    egui::RichText::new("▶ Launch & Run")
+                                                        .color(Color32::from_rgb(16, 185, 129)),
+                                                )
+                                                .clicked()
+                                            {
+                                                self.load_builtin(&builtin_foothill_canyon_wui_osm(), None);
+                                                self.enter_workbench_running(
+                                                    DockTab::ResilienceStress,
+                                                    Some(StressSubMode::WildfireAlertWestResponse),
+                                                    HeatmapLayer::WildfireAlertWestResponse,
+                                                    ViewportTool::Inspect,
+                                                );
+                                            }
+                                        });
                                     });
+                                    cols[4].vertical(|ui| {
+                                        ui.strong("5. Metropolis 50k+ Multimodal");
+                                        ui.small(
+                                            "Multi-district arterial hierarchy, diagonal BRT spine, river crossings & 52k+ agents.",
+                                        );
+                                        ui.horizontal_wrapped(|ui| {
+                                            if ui.button("Open (Paused)").clicked() {
+                                                self.load_builtin(
+                                                    &builtin_metropolis_50k_osm(),
+                                                    Some(self.target_crowd_slider.max(52_000)),
+                                                );
+                                                self.enter_workbench(
+                                                    DockTab::SignalsAndRoads,
+                                                    None,
+                                                    HeatmapLayer::AgentDensity,
+                                                    ViewportTool::Inspect,
+                                                );
+                                            }
+                                            if ui
+                                                .button(
+                                                    egui::RichText::new("▶ Launch & Run")
+                                                        .color(Color32::from_rgb(56, 189, 248)),
+                                                )
+                                                .clicked()
+                                            {
+                                                self.load_builtin(
+                                                    &builtin_metropolis_50k_osm(),
+                                                    Some(self.target_crowd_slider.max(52_000)),
+                                                );
+                                                self.enter_workbench_running(
+                                                    DockTab::SignalsAndRoads,
+                                                    None,
+                                                    HeatmapLayer::AgentDensity,
+                                                    ViewportTool::Inspect,
+                                                );
+                                            }
+                                        });
+                                    });
+                                });
+                                ui.add_space(4.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.small("Compact Network Micro-Labs:");
+                                    if ui.small_button("2-Lane Roundabout").clicked() {
+                                        self.load_builtin(&builtin_roundabout_osm(), None);
+                                        self.enter_workbench(
+                                            DockTab::SignalsAndRoads,
+                                            None,
+                                            HeatmapLayer::Zoning,
+                                            ViewportTool::Inspect,
+                                        );
+                                    }
+                                    if ui.small_button("Braess Diamond").clicked() {
+                                        self.load_builtin(&builtin_braess_diamond_osm(), None);
+                                        self.enter_workbench(
+                                            DockTab::SignalsAndRoads,
+                                            None,
+                                            HeatmapLayer::Zoning,
+                                            ViewportTool::Inspect,
+                                        );
+                                    }
                                 });
                             });
 
@@ -1219,7 +1421,7 @@ impl UrbanGridGuiApp {
                             ui.separator();
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.hub_search_query)
-                                    .hint_text("Filter 24 modules (e.g. ALERTWest, OHAZ, Wildfire, GSB, DRC, TDMS, IPAWS, US&R, POD, GTFS)...")
+                                    .hint_text("Filter 24 modules (e.g. ALERTWest, Wildfire, GSB, DRC, TDMS, IPAWS, US&R, POD, GTFS)...")
                                     .desired_width(430.0),
                             );
                             if !self.hub_search_query.is_empty() && ui.small_button("Clear").clicked() {
@@ -1432,7 +1634,7 @@ impl UrbanGridGuiApp {
                                 ],
                             ),
                             (
-                                "DOMAIN VI — FEMA ESF-3/IA RECOVERY & ALERTWEST / OHAZ WUI WILDFIRE RESPONSE",
+                                "DOMAIN VI — FEMA ESF-3/IA RECOVERY & ALERTWEST WUI WILDFIRE RESPONSE",
                                 Color32::from_rgb(248, 113, 113),
                                 [
                                     (
@@ -1444,8 +1646,8 @@ impl UrbanGridGuiApp {
                                         ViewportTool::Inspect,
                                     ),
                                     (
-                                        "ALERTWest & UOregon OHAZ AI Cameras",
-                                        "Link JSON/GeoJSON/CSV feeds: 360° 40x NIR PTZ, 2-min AI scan, ShakeAlert & Starlink MDUs.",
+                                        "ALERTWest Wildfire AI Cameras",
+                                        "Link JSON/GeoJSON/CSV feeds: 360° 40x NIR PTZ, 2-min AI scan, seismic telemetry & Starlink MDUs.",
                                         DockTab::ResilienceStress,
                                         Some(StressSubMode::WildfireAlertWestResponse),
                                         HeatmapLayer::WildfireAlertWestResponse,
@@ -1559,6 +1761,55 @@ impl UrbanGridGuiApp {
         let dt_real = ctx.input(|i| i.stable_dt as f64).clamp(0.0005, 0.05);
         self.ema_frame_ms = self.ema_frame_ms * 0.92 + (dt_real * 1000.0) * 0.08;
 
+        // Global CAD Undo / Redo keyboard shortcuts (`Ctrl+Z`, `Ctrl+Y`, and `Ctrl+Shift+Z`).
+        if !ctx.wants_keyboard_input() {
+            let (want_redo, want_undo) = ctx.input_mut(|i| {
+                let redo_shift_z = egui::KeyboardShortcut::new(
+                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                    egui::Key::Z,
+                );
+                let redo_y = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Y);
+                let undo_z = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
+                let r = i.consume_shortcut(&redo_shift_z) || i.consume_shortcut(&redo_y);
+                let u = if r { false } else { i.consume_shortcut(&undo_z) };
+                (r, u)
+            });
+            if want_redo {
+                self.trigger_redo();
+            } else if want_undo {
+                self.trigger_undo();
+            }
+        }
+
+        // Global Navigation Shortcuts: `Ctrl+K` Command Palette & `F1` / `Home` Main Entrance Hub toggle
+        let (toggle_palette, toggle_home, toggle_pause) = ctx.input_mut(|i| {
+            let cmd_k = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::K);
+            let tk = i.consume_shortcut(&cmd_k);
+            let th = !tk && (i.key_pressed(egui::Key::F1) || i.key_pressed(egui::Key::Home));
+            let tp = i.key_pressed(egui::Key::Space);
+            (tk, th, tp)
+        });
+        if toggle_palette {
+            self.command_palette_open = !self.command_palette_open;
+        }
+        if toggle_home && !ctx.wants_keyboard_input() {
+            self.screen = match self.screen {
+                GuiScreen::MainEntranceHub => GuiScreen::ActiveWorkbench,
+                GuiScreen::ActiveWorkbench => GuiScreen::MainEntranceHub,
+            };
+        }
+
+        self.render_command_palette(ctx);
+        // Zero background simulation or continuous repaint while on MainEntranceHub!
+        if self.screen == GuiScreen::MainEntranceHub {
+            self.render_main_entrance_hub(ctx);
+            return;
+        }
+
+        if toggle_pause && !ctx.wants_keyboard_input() {
+            self.paused = !self.paused;
+        }
+
         if !self.paused {
             if self.layer == HeatmapLayer::EmergencyResponse4Min
                 || (self.layer == HeatmapLayer::ResponseDistricts
@@ -1580,59 +1831,14 @@ impl UrbanGridGuiApp {
             if self.physics_accum_s > FIXED_PHYSICS_DT * 2.0 {
                 self.physics_accum_s = 0.0;
             }
+            // Request continuous repaint only while simulation is actively running
+            ctx.request_repaint();
         }
         let interp_dt = if self.paused {
             0.0
         } else {
             self.physics_accum_s.clamp(0.0, FIXED_PHYSICS_DT)
         };
-
-        // Global CAD Undo / Redo keyboard shortcuts (`Ctrl+Z`, `Ctrl+Y`, and `Ctrl+Shift+Z`).
-        // Match `Ctrl+Shift+Z` and `Ctrl+Y` before `Ctrl+Z` per `egui::InputState::consume_shortcut` specificity rules.
-        if !ctx.wants_keyboard_input() {
-            let (want_redo, want_undo) = ctx.input_mut(|i| {
-                let redo_shift_z = egui::KeyboardShortcut::new(
-                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-                    egui::Key::Z,
-                );
-                let redo_y = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Y);
-                let undo_z = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
-                let r = i.consume_shortcut(&redo_shift_z) || i.consume_shortcut(&redo_y);
-                let u = if r { false } else { i.consume_shortcut(&undo_z) };
-                (r, u)
-            });
-            if want_redo {
-                self.trigger_redo();
-            } else if want_undo {
-                self.trigger_undo();
-            }
-        }
-
-        // Global Navigation Shortcuts: `Ctrl+K` Command Palette & `F1` / `Home` Main Entrance Hub toggle
-        let (toggle_palette, toggle_home) = ctx.input_mut(|i| {
-            let cmd_k = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::K);
-            let tk = i.consume_shortcut(&cmd_k);
-            let th = !tk && (i.key_pressed(egui::Key::F1) || i.key_pressed(egui::Key::Home));
-            (tk, th)
-        });
-        if toggle_palette {
-            self.command_palette_open = !self.command_palette_open;
-        }
-        if toggle_home && !ctx.wants_keyboard_input() {
-            self.screen = match self.screen {
-                GuiScreen::MainEntranceHub => GuiScreen::ActiveWorkbench,
-                GuiScreen::ActiveWorkbench => GuiScreen::MainEntranceHub,
-            };
-        }
-
-        // Request immediate continuous repaint for 120+ FPS uncapped / VRR presentation
-        ctx.request_repaint();
-
-        self.render_command_palette(ctx);
-        if self.screen == GuiScreen::MainEntranceHub {
-            self.render_main_entrance_hub(ctx);
-            return;
-        }
 
         egui::TopBottomPanel::top("top_toolbar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -1661,31 +1867,48 @@ impl UrbanGridGuiApp {
                 }
                 ui.checkbox(&mut self.show_cad_toolbar, "CAD Bar");
                 ui.separator();
-                if ui.button("Corvallis Couplets").clicked() {
-                    self.load_builtin(&builtin_corvallis_couplets_osm(), None);
+                if ui.button("Riverfront Bridges").clicked() {
+                    self.load_builtin(&builtin_riverfront_bridges_osm(), None);
                 }
-                if ui.button("2-Lane Roundabout").clicked() {
-                    self.load_builtin(&builtin_roundabout_osm(), None);
+                if ui.button("Harbor Peninsula").clicked() {
+                    self.load_builtin(&builtin_harbor_peninsula_osm(), None);
                 }
-                if ui.button("Braess Diamond").clicked() {
-                    self.load_builtin(&builtin_braess_diamond_osm(), None);
+                if ui.button("Radial Ring Plazas").clicked() {
+                    self.load_builtin(&builtin_radial_ring_plazas_osm(), None);
+                }
+                if ui.button("Foothill Canyon").clicked() {
+                    self.load_builtin(&builtin_foothill_canyon_wui_osm(), None);
                 }
                 if ui
                     .button(
-                        egui::RichText::new("50k+ Megacity GPU Stress")
+                        egui::RichText::new("Metropolis 50k+")
                             .strong()
                             .color(Color32::from_rgb(56, 189, 248)),
                     )
                     .clicked()
                 {
                     self.load_builtin(
-                        &builtin_megacity_supergrid_osm(12, 12),
+                        &builtin_metropolis_50k_osm(),
                         Some(self.target_crowd_slider.max(52_000)),
                     );
                 }
+                if ui.small_button("Roundabout").clicked() {
+                    self.load_builtin(&builtin_roundabout_osm(), None);
+                }
+                if ui.small_button("Braess").clicked() {
+                    self.load_builtin(&builtin_braess_diamond_osm(), None);
+                }
                 ui.separator();
                 if ui
-                    .button(if self.paused { "Resume" } else { "Pause" })
+                    .button(if self.paused {
+                        egui::RichText::new("▶ Run (Space)")
+                            .strong()
+                            .color(Color32::from_rgb(16, 185, 129))
+                    } else {
+                        egui::RichText::new("⏸ Pause (Space)")
+                            .strong()
+                            .color(Color32::from_rgb(250, 204, 21))
+                    })
                     .clicked()
                 {
                     self.paused = !self.paused;
@@ -1732,7 +1955,7 @@ impl UrbanGridGuiApp {
                         HeatmapLayer::FemaIsbPods => "GPU Heatmap: FEMA ISB, USACE POD Queueing & IPAWS Routing",
                         HeatmapLayer::FemaUsarDebris => "GPU Heatmap: FEMA US&R Type-1 Grids, Debris Push & POD Reopen",
                         HeatmapLayer::FemaGsbDrcTdms => "GPU Heatmap: FEMA 249th GSB Power, TDMS Debris & DRC/MRIC",
-                        HeatmapLayer::WildfireAlertWestResponse => "GPU Heatmap: ALERTWest/OHAZ Cameras & NWCG WUI Wildfire",
+                        HeatmapLayer::WildfireAlertWestResponse => "GPU Heatmap: ALERTWest Cameras & NWCG WUI Wildfire",
                         HeatmapLayer::BurnScarDebrisFlow => "GPU Heatmap: Burn-Scar Runoff, USGS Debris Basins & Culverts",
                         HeatmapLayer::WtpTurbidityStorage => "GPU Heatmap: WTP Ash/Turbidity Shutoff, Coagulant & Storage",
                         HeatmapLayer::VspEmissions => "GPU Heatmap: VSP Emissions Plume",
@@ -1828,7 +2051,7 @@ impl UrbanGridGuiApp {
                         ui.selectable_value(
                             &mut self.layer,
                             HeatmapLayer::WildfireAlertWestResponse,
-                            "GPU Heatmap: ALERTWest / UOregon OHAZ PTZ & NWCG WUI Wildfire",
+                            "GPU Heatmap: ALERTWest PTZ Cameras & NWCG WUI Wildfire",
                         );
                         ui.selectable_value(
                             &mut self.layer,
@@ -1899,10 +2122,12 @@ impl UrbanGridGuiApp {
                                 loaded_world.sim_time_s,
                                 loaded_world.total_active_agents()
                             );
+                            self.active_city_name = loaded_world.network.city_label.clone();
                             self.world = loaded_world;
                             self.physics_accum_s = 0.0;
                             self.heatmap_dirty = true;
                             self.plume_reset_pending = true;
+                            self.paused = true;
                         }
                         Err(e) => {
                             self.io_status_msg = format!("Load failed: {e}");
@@ -1937,6 +2162,48 @@ impl UrbanGridGuiApp {
                 if !self.io_status_msg.is_empty() {
                     ui.separator();
                     ui.colored_label(Color32::from_rgb(52, 211, 153), &self.io_status_msg);
+                }
+            });
+            ui.separator();
+            ui.horizontal_wrapped(|ui| {
+                let status_badge = if self.paused {
+                    egui::RichText::new("⏸ PAUSED — Ready")
+                        .strong()
+                        .color(Color32::from_rgb(250, 204, 21))
+                } else {
+                    egui::RichText::new("▶ RUNNING")
+                        .strong()
+                        .color(Color32::from_rgb(52, 211, 153))
+                };
+                let br_cnt = self.world.network.segments.iter().filter(|s| s.is_bridge).count();
+                let wt_cnt = self.world.network.water_features.len();
+                ui.label(
+                    egui::RichText::new(format!("[Active City Map: {}]", self.active_city_name))
+                        .strong()
+                        .color(Color32::from_rgb(125, 211, 252)),
+                );
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(format!(
+                        "[Active Scenario / Hazard Mode: {}]",
+                        self.active_scenario_mode_label()
+                    ))
+                    .color(Color32::from_rgb(167, 243, 208)),
+                );
+                ui.separator();
+                ui.label(status_badge);
+                ui.monospace(format!(
+                    "| Sim Clock {:.1}s | Agents {} | Bridges {} | Water {}",
+                    self.world.sim_time_s,
+                    self.world.total_active_agents(),
+                    br_cnt,
+                    wt_cnt
+                ));
+                if ui
+                    .small_button(if self.paused { "▶ Run" } else { "⏸ Pause" })
+                    .clicked()
+                {
+                    self.paused = !self.paused;
                 }
             });
             if self.show_cad_toolbar {
@@ -4146,7 +4413,7 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                 (StressSubMode::FemaIsbPods, "ISB & PODs"),
                                 (StressSubMode::FemaUsarDebris, "US&R & Debris"),
                                 (StressSubMode::FemaGsbDrcTdms, "GSB/TDMS/DRC"),
-                                (StressSubMode::WildfireAlertWestResponse, "ALERTWest/OHAZ Fire"),
+                                (StressSubMode::WildfireAlertWestResponse, "ALERTWest Fire"),
                                 (StressSubMode::BurnScarDebrisFlow, "Burn-Scar & Culverts"),
                                 (StressSubMode::WtpTurbidityStorage, "WTP Ash/Turbidity"),
                             ];
@@ -8539,12 +8806,12 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                         StressSubMode::WildfireAlertWestResponse => {
                             ui.label(
                                 egui::RichText::new(
-                                    "ALERTWest & UOregon OHAZ AI PTZ Cameras + NWCG WUI Suppression",
+                                    "ALERTWest AI PTZ Cameras + NWCG WUI Suppression",
                                 )
                                 .strong(),
                             );
                             ui.small(
-                                "Links alertwest.org & ohaz.uoregon.edu/wildfire-cameras/ (360° 40x NIR PTZ, 2-min AI scan, PNSN/ShakeAlert, <50 lb Starlink MDUs) with Rothermel/NWCG VLAT Phos-Chek & Hotshot suppression.",
+                                "Links alertwest.org PTZ camera feeds (360° 40x NIR PTZ, 2-min AI scan, co-located seismic telemetry, <50 lb Starlink MDUs) with Rothermel/NWCG VLAT Phos-Chek & Hotshot suppression.",
                             );
 
                             // Live Feed File Linker (.json / GeoJSON / .csv)
@@ -8554,7 +8821,7 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                             });
                             ui.horizontal_wrapped(|ui| {
                                 if ui.small_button("Link .json / GeoJSON / .csv").clicked() {
-                                    match load_alertwest_ohaz_feed_path(
+                                    match load_wildfire_camera_feed_path(
                                         Path::new(&self.wildfire_feed_path),
                                         self.world.network.bounds,
                                     ) {
@@ -8562,7 +8829,7 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                                             let n_c = cams.len();
                                             self.wildfire_cfg.custom_camera_sites = cams;
                                             self.io_status_msg = format!(
-                                                "Linked {n_c} ALERTWest / UOregon OHAZ cameras from {}",
+                                                "Linked {n_c} ALERTWest cameras from {}",
                                                 self.wildfire_feed_path
                                             );
                                         }
@@ -8571,18 +8838,18 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                                         }
                                     }
                                 }
-                                if ui.small_button("Write Sample OHAZ .json").clicked() {
+                                if ui.small_button("Write Sample Feed .json").clicked() {
                                     if let Some(parent) = Path::new(&self.wildfire_feed_path).parent()
                                     {
                                         let _ = std::fs::create_dir_all(parent);
                                     }
                                     match std::fs::write(
                                         &self.wildfire_feed_path,
-                                        builtin_oregon_ohaz_alertwest_feed_json(),
+                                        builtin_western_wildfire_camera_feed_json(),
                                     ) {
                                         Ok(()) => {
                                             self.io_status_msg = format!(
-                                                "Wrote sample ALERTWest/OHAZ camera feed -> {}",
+                                                "Wrote sample ALERTWest camera feed -> {}",
                                                 self.wildfire_feed_path
                                             );
                                         }
@@ -8592,7 +8859,7 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                                     }
                                 }
                                 if !self.wildfire_cfg.custom_camera_sites.is_empty()
-                                    && ui.small_button("Use Built-in OHAZ").clicked()
+                                    && ui.small_button("Use Built-in Feed").clicked()
                                 {
                                     self.wildfire_cfg.custom_camera_sites.clear();
                                 }
@@ -8603,8 +8870,8 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                                 .show_ui(ui, |ui| {
                                     for pst in [
                                         WildfireDetectionAndAttackPosture::Legacy911GroundOnly,
-                                        WildfireDetectionAndAttackPosture::AlertWestOhazFixedPtzInitialAttack,
-                                        WildfireDetectionAndAttackPosture::FullAlertWestOhazMduAndAerialAttack,
+                                        WildfireDetectionAndAttackPosture::AlertWestFixedPtzInitialAttack,
+                                        WildfireDetectionAndAttackPosture::FullAlertWestMduAndAerialAttack,
                                     ] {
                                         ui.selectable_value(
                                             &mut self.wildfire_cfg.posture,
@@ -8659,7 +8926,7 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                             ui.horizontal(|ui| {
                                 ui.add(
                                     egui::Slider::new(
-                                        &mut self.wildfire_cfg.ohaz_starlink_mdu_units,
+                                        &mut self.wildfire_cfg.starlink_mdu_units,
                                         0..=4,
                                     )
                                     .text("Starlink MDUs"),
@@ -8692,7 +8959,7 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                             ui.horizontal_wrapped(|ui| {
                                 if ui
                                     .button(
-                                        egui::RichText::new("Run ALERTWest/OHAZ Wildfire MC")
+                                        egui::RichText::new("Run ALERTWest Wildfire MC")
                                             .strong()
                                             .color(Color32::from_rgb(248, 113, 113)),
                                     )
@@ -8726,12 +8993,12 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                                     let r0 = self.world.run_wildfire_alertwest_mc(&w0);
                                     let mut w1 = self.wildfire_cfg.clone();
                                     w1.posture =
-                                        WildfireDetectionAndAttackPosture::FullAlertWestOhazMduAndAerialAttack;
+                                        WildfireDetectionAndAttackPosture::FullAlertWestMduAndAerialAttack;
                                     let r1 = self.world.run_wildfire_alertwest_mc(&w1);
                                     self.wildfire_cfg.posture =
-                                        WildfireDetectionAndAttackPosture::FullAlertWestOhazMduAndAerialAttack;
+                                        WildfireDetectionAndAttackPosture::FullAlertWestMduAndAerialAttack;
                                     self.wildfire_ab_summary = Some(format!(
-                                        "A/B CRN: 911 Det={:.1}m ({:.1} ac, Lost={:.1}) -> ALERTWest/OHAZ Det={:.1}m ({:.1} ac, Lost={:.1})",
+                                        "A/B CRN: 911 Det={:.1}m ({:.1} ac, Lost={:.1}) -> ALERTWest Det={:.1}m ({:.1} ac, Lost={:.1})",
                                         r0.mean_detection_to_dispatch_min,
                                         r0.final_burned_area_acres,
                                         r0.expected_wui_structures_lost,
@@ -8851,7 +9118,7 @@ Attack   : {:.1} ac (P90 {:.1}) | Cont={:.0}% | Phos-Chek={:.0} gal | GoEvac={:.
                                         match wrep.export_camera_csv_path(Path::new(&self.wildfire_csv_path)) {
                                             Ok(n_r) => {
                                                 self.io_status_msg = format!(
-                                                    "Exported {n_r} ALERTWest/OHAZ camera rows -> {}",
+                                                    "Exported {n_r} ALERTWest camera rows -> {}",
                                                     self.wildfire_csv_path
                                                 );
                                             }
@@ -10423,14 +10690,14 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                     }
                 }
 
-                // ALERTWest & UOregon OHAZ PTZ Camera Azimuth Triangulation Rays, CEP90 Ignition Fix & VLAT Phos-Chek Retardant Lines
+                // ALERTWest PTZ Camera Azimuth Triangulation Rays, CEP90 Ignition Fix & VLAT Phos-Chek Retardant Lines
                 if self.layer == HeatmapLayer::WildfireAlertWestResponse {
                     if let Some(wrep) = self.latest_wildfire_report.as_ref() {
                         painter.text(
                             Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
                             egui::Align2::LEFT_TOP,
                             format!(
-                                "[ALERTWEST / OHAZ WILDFIRE ({} | {} LOS Cams | CEP90={:.0}m | Det={:.1}m) | {:.1} ac | Flame={:.1}ft | Cont={:.0}%]",
+                                "[ALERTWEST WILDFIRE ({} | {} LOS Cams | CEP90={:.0}m | Det={:.1}m) | {:.1} ac | Flame={:.1}ft | Cont={:.0}%]",
                                 wrep.config.posture.short_label(),
                                 wrep.cameras_with_los_count,
                                 wrep.triangulation_cep90_m,
@@ -10491,17 +10758,17 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             Color32::from_rgb(254, 240, 138),
                         );
 
-                        // ALERTWest / UOregon OHAZ / Starlink MDU Camera Badges
+                        // ALERTWest & Starlink MDU Camera Badges
                         for cam in &wrep.camera_sites {
                             let c_scr = world_to_screen(cam.world_pos.x, cam.world_pos.y);
                             let ccol = match cam.kind {
-                                AlertWestOhazCameraKind::OhazMountaintopFixedPtz => {
+                                WildfireCameraKind::MountaintopFixedPtz => {
                                     Color32::from_rgb(56, 189, 248)
                                 }
-                                AlertWestOhazCameraKind::AlertWestWuiLookoutTower => {
+                                WildfireCameraKind::WuiLookoutTower => {
                                     Color32::from_rgb(251, 146, 60)
                                 }
-                                AlertWestOhazCameraKind::OhazStarlinkMobileDeploymentUnit => {
+                                WildfireCameraKind::StarlinkMobileDeploymentUnit => {
                                     Color32::from_rgb(52, 211, 153)
                                 }
                             };
@@ -11834,6 +12101,7 @@ pub fn render_headless_screenshot(
     egui_ctx.set_pixels_per_point(1.0);
     let mut app = UrbanGridGuiApp::new_with_wgpu_state(Some(&wgpu_state), world);
     if view == 2 {
+        app.load_builtin(&builtin_harbor_peninsula_osm(), None);
         app.mclp_cfg.max_stations_budget = 1;
         let mrep = app.world.solve_mclp_station_siting(&app.mclp_cfg);
         app.world.apply_mclp_siting_solution(&mrep);
@@ -11842,7 +12110,7 @@ pub fn render_headless_screenshot(
         app.world.transit_gtfs.fare_mode = ug_core::BoardingFareMode::AllDoorFareFreeBrt;
         app.world.transit_gtfs.coach_spec = ug_core::BusCoachSpec::Articulated60FtBrt;
         app.world.transit_gtfs.hold_early_buses = true;
-        for _ in 0..240 {
+        for _ in 0..180 {
             app.world.step(0.1);
         }
         app.enter_workbench(
@@ -11851,8 +12119,9 @@ pub fn render_headless_screenshot(
             HeatmapLayer::EmergencyResponse4Min,
             ViewportTool::Inspect,
         );
-        app.cam_zoom = 0.56;
+        app.cam_zoom = 0.62;
     } else if view == 3 {
+        app.load_builtin(&builtin_foothill_canyon_wui_osm(), None);
         let mrep = app.world.solve_mclp_station_siting(&app.mclp_cfg);
         app.world.apply_mclp_siting_solution(&mrep);
         app.latest_mclp_report = Some(mrep);
@@ -11902,14 +12171,16 @@ pub fn render_headless_screenshot(
             HeatmapLayer::EvacuationContraflow,
             ViewportTool::Inspect,
         );
-        app.cam_zoom = 0.54;
+        app.cam_zoom = 0.62;
     } else {
+        // View 1: Default Riverfront Bridges Metro shown paused/ready at t=0.0s
         app.enter_workbench(
             DockTab::SignalsAndRoads,
             None,
             HeatmapLayer::Zoning,
             ViewportTool::Inspect,
         );
+        app.cam_zoom = 0.66;
     }
 
     for frame_idx in 0..4u32 {
@@ -12027,7 +12298,7 @@ pub fn run_gui(world: SimulationWorld, vsync: bool) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(
-                "urban-grid v5.2 — FEMA Suite, ALERTWest/OHAZ Wildfire, WTP Turbidity & 50k+ wgpu Workbench",
+                "urban-grid v5.2 — FEMA Suite, ALERTWest Wildfire, WTP Turbidity & 50k+ wgpu Workbench",
             )
             .with_inner_size([1440.0, 880.0]),
         renderer: eframe::Renderer::Wgpu,
@@ -12043,4 +12314,79 @@ pub fn run_gui(world: SimulationWorld, vsync: bool) -> eframe::Result<()> {
         options,
         Box::new(|cc| Ok(Box::new(UrbanGridGuiApp::new(cc, world)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ug_core::{parse_osm_xml_str, RoadNetwork};
+
+    #[test]
+    fn test_paused_on_launch_and_zero_background_sim_while_on_hub_or_paused() {
+        let osm = parse_osm_xml_str(&builtin_riverfront_bridges_osm()).unwrap();
+        let world = SimulationWorld::new(RoadNetwork::compile(&osm));
+        let mut app = UrbanGridGuiApp::new_with_wgpu_state(None, world);
+        assert!(app.paused);
+        assert_eq!(app.screen, GuiScreen::MainEntranceHub);
+        assert_eq!(app.world.sim_time_s, 0.0);
+        assert_eq!(app.active_city_name, "Riverfront Bridges Metro");
+
+        let ctx = egui::Context::default();
+        let make_input = |t_s: f64| egui::RawInput {
+            time: Some(t_s),
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, EguiVec2::new(1280.0, 800.0))),
+            ..Default::default()
+        };
+        let mut t_s = 0.0;
+        for frame_idx in 0..8 {
+            t_s += 0.5;
+            let out = ctx.run(make_input(t_s), |c| {
+                app.ui_step(c);
+            });
+            if frame_idx >= 5 {
+                assert!(
+                    !out.viewport_output.values().any(|v| v.repaint_delay.is_zero()),
+                    "MainEntranceHub must not request continuous repaint once settled"
+                );
+            }
+        }
+        assert_eq!(app.world.sim_time_s, 0.0);
+
+        // Entering ActiveWorkbench stays paused at t = 0.0s until user starts
+        app.enter_workbench(
+            DockTab::SignalsAndRoads,
+            None,
+            HeatmapLayer::Zoning,
+            ViewportTool::Inspect,
+        );
+        assert!(app.paused);
+        for frame_idx in 0..8 {
+            t_s += 0.5;
+            let out = ctx.run(make_input(t_s), |c| {
+                app.ui_step(c);
+            });
+            if frame_idx >= 5 {
+                assert!(
+                    !out.viewport_output.values().any(|v| v.repaint_delay.is_zero()),
+                    "Paused ActiveWorkbench must not spin continuous repaint"
+                );
+            }
+        }
+        assert_eq!(app.world.sim_time_s, 0.0);
+
+        // Unpausing advances physics cleanly and requests continuous repaint
+        app.paused = false;
+        let mut requested_active_repaint = false;
+        for _ in 0..4 {
+            t_s += 0.02;
+            let out = ctx.run(make_input(t_s), |c| {
+                app.ui_step(c);
+            });
+            if out.viewport_output.values().any(|v| v.repaint_delay.is_zero()) {
+                requested_active_repaint = true;
+            }
+        }
+        assert!(requested_active_repaint);
+        assert!(app.world.sim_time_s > 0.0);
+    }
 }

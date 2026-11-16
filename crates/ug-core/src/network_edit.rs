@@ -580,6 +580,7 @@ pub fn draw_road_segment(
         ema_speed_mps: mps,
         vsp_intensity: 0.05,
         lane_ids: Vec::new(),
+        is_bridge: false,
     });
     created_ids.push(fwd_id);
 
@@ -610,6 +611,7 @@ pub fn draw_road_segment(
             ema_speed_mps: mps,
             vsp_intensity: 0.05,
             lane_ids: Vec::new(),
+            is_bridge: false,
         });
         created_ids.push(rev_id);
     }
@@ -941,6 +943,7 @@ pub fn convert_junction_to_roundabout(
             ema_speed_mps: 20.0 * 0.447_04,
             vsp_intensity: 0.05,
             lane_ids: Vec::new(),
+            is_bridge: false,
         });
     }
 

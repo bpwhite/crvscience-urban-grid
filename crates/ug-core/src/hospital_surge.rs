@@ -26,8 +26,7 @@
 //!   `https://escholarship.org/content/qt75w3g2g2/qt75w3g2g2.pdf`).
 //! - Kearns et al. (2020), *Actionable, Revised (v.3), and Amplified American Burn Association
 //!   Triage Tables for Mass Casualties* (`https://pmc.ncbi.nlm.nih.gov/articles/PMC7530540/`) and
-//!   Oregon Health Authority *State Mass Burn Casualty Plan*
-//!   (`https://www.oregon.gov/oha/PH/PROVIDERPARTNERRESOURCES/EMS/EMSFORCHILDREN/Documents/Oregon-Mass-Burn-Casualty-Plan.pdf`).
+//!   Western Region Burn Disaster Consortium (*WRBDC State/Regional Mass Burn Casualty Plan*).
 //! - Spatial-Network Load Balancing & Dynamic Ambulance Diversion / Interhospital Transfer
 //!   (*Disaster Medicine and Public Health Preparedness*,
 //!   `https://www.cambridge.org/core/journals/disaster-medicine-and-public-health-preparedness/article/spatialnetwork-framework-for-load-balancing-and-patient-transfer-management-during-emergencies/E0CC2E9FFEF04BE4803CA82D1DE89D0D`).

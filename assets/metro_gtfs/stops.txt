@@ -1,0 +1,11 @@
+stop_id,stop_name,stop_lat,stop_lon
+DTC_WEST_SOUTH,"Westbank Transit Center (West Ave & South Blvd)",39.999000,-105.002900
+EASTBANK_BRIDGE,"Eastbank Parkway & Central Arch Bridge",39.999000,-104.997800
+HARBOR_NORTH_EB,"North Bridge Approach (Westbank Promenade)",40.002850,-105.000800
+HARBOR_NORTH_WB,"North Bridge Approach (Westbank Couplet)",40.002850,-105.002500
+COUPLET_MID_SB,"Westbank Couplet SB & Mid-Arch Bridge",40.000950,-105.002500
+COUPLET_SOU_SB,"Westbank Couplet SB & South Blvd",39.999050,-105.002500
+COUPLET_SOU_NB,"Westbank Couplet NB & South Blvd",39.999050,-105.001400
+COUPLET_MID_NB,"Westbank Couplet NB & Mid-Arch Bridge",40.000950,-105.001400
+MIDTOWN_WEST,"Midtown Crossing (West Prom & Arch St)",40.000950,-105.003500
+MIDTOWN_EAST,"Midtown Crossing (East Pkwy & Arch St)",40.000950,-104.997800
