@@ -11,9 +11,7 @@ version: "5.2.0"
 doi: "10.5281/zenodo.24222394"
 url: "https://crvscience.com/apps"
 repository-code: "https://github.com/bpwhite/crvscience-urban-grid"
-license:
-  - MIT
-  - Apache-2.0
+license: "GPL-3.0-or-later"
 preferred-citation:
   type: article
   title: "Urban-Grid: Modeling City Traffic, Emergency Response Coverage, and Earthquake Evacuation"
