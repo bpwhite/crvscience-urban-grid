@@ -1,3 +1,18 @@
+// Copyright (C) 2026 CRV Science Network (https://crvscience.com)
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://gnu.org>.
+
 //! Post-Earthquake Cellular Base-Station (`BTS`) Blackout Fragility, FEMA IPAWS Wireless Emergency
 //! Alerts (`WEA`) vs. Outdoor Acoustic Warning Sirens (`NIST TN 1950`) & Hi-Lo / Door-to-Door
 //! Canvassing Warning Diffusion, Lindell-Perry (`PADM` / `EMBLEM2`) Mobilization S-Curves, and

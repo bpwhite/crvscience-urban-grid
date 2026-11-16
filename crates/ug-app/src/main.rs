@@ -1,3 +1,18 @@
+// Copyright (C) 2026 CRV Science Network (https://crvscience.com)
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://gnu.org>.
+
 mod batch;
 #[cfg(feature = "gui")]
 mod gui;
@@ -205,6 +220,16 @@ enum BuiltinScenario {
     about = "Standalone OpenStreetMap Microscopic Traffic, GTFS Transit, 50k+ wgpu WGSL Crowd & Urban Planning Simulator"
 )]
 struct Cli {
+    /// Render an offscreen 1600x1000 RGBA PNG screenshot without opening a GUI window
+    #[arg(long, value_name = "PATH", global = true)]
+    #[allow(dead_code)]
+    screenshot: Option<std::path::PathBuf>,
+
+    /// Select which built-in module showcase view to capture (1 = primary workbench, 2 = GTFS transit & 4-min EMS, 3 = seismic & contraflow evacuation)
+    #[arg(long, default_value_t = 1, value_name = "VIEW", global = true)]
+    #[allow(dead_code)]
+    screenshot_view: u8,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -1097,7 +1122,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             #[cfg(feature = "gui")]
             {
-                gui::run_gui(world, vsync).map_err(|e| format!("GUI error: {e}"))?;
+                if let Some(ref out_path) = cli.screenshot {
+                    gui::render_headless_screenshot(world, out_path, cli.screenshot_view)
+                        .map_err(|e| format!("Headless screenshot error: {e}"))?;
+                } else {
+                    gui::run_gui(world, vsync).map_err(|e| format!("GUI error: {e}"))?;
+                }
             }
             #[cfg(not(feature = "gui"))]
             {

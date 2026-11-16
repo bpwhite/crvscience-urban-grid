@@ -1,5 +1,7 @@
 # `urban-grid` v4.3.0 — Standalone Microscopic Traffic, GTFS Transit, 50k+ `wgpu` Crowd & Urban Planning Suite
 
+![Urban-Grid Headless Workbench](validation/headless_screenshot.png)
+
 `urban-grid` is a self-contained, offline-first Rust urban planning, fixed-route public transit, and microscopic multi-modal traffic simulator in an independent Cargo workspace. It compiles real-world OpenStreetMap (`.osm` XML, `.osm.pbf`, and live Overpass API bounding boxes) and [GTFS Schedule](https://gtfs.org/documentation/schedule/reference/) feeds into 3.5 m metric lane geometry, coupling parcel land-use zoning, doubly-constrained gravity trip distribution, multinomial logit mode choice, scheduled bus routes with curbside dwell & ridership crowding, microscopic `IDM` + `MOBIL` + sidewalk/crosswalk crowd dynamics, environmental emissions/hydrology, municipal fiscal solvency, and a **custom 3-pass [`wgpu`](https://github.com/gfx-rs/wgpu) WGSL instanced viewport renderer** sustaining **50,000+ simultaneous agents plus GPU heatmap textures at 120+ FPS**.
 
 ## Workspace Architecture

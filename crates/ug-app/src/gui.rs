@@ -1,3 +1,18 @@
+// Copyright (C) 2026 CRV Science Network (https://crvscience.com)
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://gnu.org>.
+
 #![cfg(feature = "gui")]
 
 use crate::batch::parse_demand_scales_arg;
@@ -325,9 +340,16 @@ pub struct UrbanGridGuiApp {
 }
 
 impl UrbanGridGuiApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, mut world: SimulationWorld) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, world: SimulationWorld) -> Self {
+        Self::new_with_wgpu_state(cc.wgpu_render_state.as_ref(), world)
+    }
+
+    pub fn new_with_wgpu_state(
+        wgpu_render_state: Option<&egui_wgpu::RenderState>,
+        mut world: SimulationWorld,
+    ) -> Self {
         let mut gpu_ready = false;
-        if let Some(wgpu_state) = cc.wgpu_render_state.as_ref() {
+        if let Some(wgpu_state) = wgpu_render_state {
             let resources = UrbanViewportGpuResources::new(
                 &wgpu_state.device,
                 &wgpu_state.queue,
@@ -1531,8 +1553,8 @@ impl UrbanGridGuiApp {
     }
 }
 
-impl eframe::App for UrbanGridGuiApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+impl UrbanGridGuiApp {
+    pub fn ui_step(&mut self, ctx: &egui::Context) {
         self.poll_background_sweep();
         let dt_real = ctx.input(|i| i.stable_dt as f64).clamp(0.0005, 0.05);
         self.ema_frame_ms = self.ema_frame_ms * 0.92 + (dt_real * 1000.0) * 0.08;
@@ -11123,21 +11145,6 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 // Staged Evacuation & Arterial Contraflow overlays (Outbound CF lanes, Protected EMS/LZ spines & FFE roadblocks)
                 if self.layer == HeatmapLayer::EvacuationContraflow {
                     if let Some(erep) = self.latest_evac_report.as_ref() {
-                        painter.text(
-                            Pos2::new(rect.left() + 14.0, rect.top() + 36.0),
-                            egui::Align2::LEFT_TOP,
-                            format!(
-                                "[EVACUATION ({} + {}) | T90={:.1}m | Overrun={:.1} res | EMS-LZ Access={:.0}%]",
-                                erep.config.staging_strategy.short_label(),
-                                erep.config.contraflow_policy.short_label(),
-                                erep.t90_clearance_min,
-                                erep.expected_fire_overrun_residents,
-                                erep.ems_lz_corridor_access_preserved_pct
-                            ),
-                            egui::FontId::monospace(11.0),
-                            Color32::from_rgb(167, 243, 208),
-                        );
-
                         for cr in &erep.corridor_rows {
                             let p0 = world_to_screen(cr.from_pos.x, cr.from_pos.y);
                             let p1 = world_to_screen(cr.to_pos.x, cr.to_pos.y);
@@ -11630,6 +11637,34 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                     egui::FontId::monospace(11.5),
                     Color32::from_rgb(186, 230, 253),
                 );
+                if self.layer == HeatmapLayer::EvacuationContraflow {
+                    if let Some(erep) = self.latest_evac_report.as_ref() {
+                        let evac_label = format!(
+                            "[EVACUATION ({} + {}) | T90={:.1}m | Overrun={:.1} res | EMS-LZ Access={:.0}%]",
+                            erep.config.staging_strategy.short_label(),
+                            erep.config.contraflow_policy.short_label(),
+                            erep.t90_clearance_min,
+                            erep.expected_fire_overrun_residents,
+                            erep.ems_lz_corridor_access_preserved_pct
+                        );
+                        let evac_bg = Rect::from_min_size(
+                            Pos2::new(rect.left() + 12.0, rect.top() + 44.0),
+                            EguiVec2::new((evac_label.len() as f32 * 6.8 + 26.0).min(rect.width() - 24.0), 22.0),
+                        );
+                        painter.rect_filled(
+                            evac_bg,
+                            5.0,
+                            Color32::from_rgb(10, 15, 28),
+                        );
+                        painter.text(
+                            Pos2::new(evac_bg.left() + 8.0, evac_bg.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            evac_label,
+                            egui::FontId::monospace(11.0),
+                            Color32::from_rgb(167, 243, 208),
+                        );
+                    }
+                }
             } else {
                 painter.text(
                     rect.center(),
@@ -11641,6 +11676,346 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
             }
         });
     }
+}
+
+impl eframe::App for UrbanGridGuiApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.ui_step(ctx);
+    }
+}
+
+fn block_on_future<F: std::future::Future>(fut: F) -> F::Output {
+    fn noop_clone(_: *const ()) -> std::task::RawWaker {
+        noop_raw_waker()
+    }
+    fn noop(_: *const ()) {}
+    fn noop_raw_waker() -> std::task::RawWaker {
+        static VTABLE: std::task::RawWakerVTable =
+            std::task::RawWakerVTable::new(noop_clone, noop, noop, noop);
+        std::task::RawWaker::new(std::ptr::null(), &VTABLE)
+    }
+    let waker = unsafe { std::task::Waker::from_raw(noop_raw_waker()) };
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut fut = std::pin::pin!(fut);
+    loop {
+        match fut.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(val) => return val,
+            std::task::Poll::Pending => std::thread::yield_now(),
+        }
+    }
+}
+
+fn write_rgba_png(
+    path: &std::path::Path,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) -> std::io::Result<()> {
+    let row_bytes = width as usize * 4;
+    if rgba.len() != row_bytes * height as usize {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Unexpected RGBA buffer length {}", rgba.len()),
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let mut raw = Vec::with_capacity((row_bytes + 1) * height as usize);
+    for row in rgba.chunks_exact(row_bytes) {
+        raw.push(0);
+        raw.extend_from_slice(row);
+    }
+    let (mut s1, mut s2) = (1u32, 0u32);
+    for &b in &raw {
+        s1 = (s1 + b as u32) % 65521;
+        s2 = (s2 + s1) % 65521;
+    }
+    let mut zlib = Vec::with_capacity(raw.len() + (raw.len() / 65535 + 1) * 5 + 6);
+    zlib.extend_from_slice(&[0x78, 0x01]);
+    let n_chunks = raw.len().div_ceil(65535).max(1);
+    for (idx, chunk) in raw.chunks(65535).enumerate() {
+        zlib.push(if idx + 1 == n_chunks { 0x01 } else { 0x00 });
+        let len = chunk.len() as u16;
+        zlib.extend_from_slice(&len.to_le_bytes());
+        zlib.extend_from_slice(&(!len).to_le_bytes());
+        zlib.extend_from_slice(chunk);
+    }
+    zlib.extend_from_slice(&((s2 << 16) | s1).to_be_bytes());
+
+    let push_chunk = |out: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]| {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(tag);
+        out.extend_from_slice(data);
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in tag.iter().chain(data.iter()) {
+            crc ^= b as u32;
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            }
+        }
+        out.extend_from_slice(&(crc ^ 0xFFFF_FFFF).to_be_bytes());
+    };
+    let mut png = Vec::with_capacity(zlib.len() + 64);
+    png.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
+    let mut ihdr = [0u8; 13];
+    ihdr[0..4].copy_from_slice(&width.to_be_bytes());
+    ihdr[4..8].copy_from_slice(&height.to_be_bytes());
+    ihdr[8] = 8;
+    ihdr[9] = 6;
+    push_chunk(&mut png, b"IHDR", &ihdr);
+    push_chunk(&mut png, b"IDAT", &zlib);
+    push_chunk(&mut png, b"IEND", &[]);
+    std::fs::write(path, png)
+}
+
+pub fn render_headless_screenshot(
+    world: SimulationWorld,
+    out_path: &std::path::Path,
+    view: u8,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let width: u32 = 1600;
+    let height: u32 = 1000;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+    let adapter = block_on_future(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+    }))
+    .ok_or("No GPU adapter available for offscreen rendering")?;
+    let (device, queue) = block_on_future(adapter.request_device(
+        &wgpu::DeviceDescriptor {
+            label: Some("urban-grid-offscreen-device"),
+            ..Default::default()
+        },
+        None,
+    ))?;
+
+    let adapter = Arc::new(adapter);
+    let device = Arc::new(device);
+    let queue = Arc::new(queue);
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let renderer = egui_wgpu::Renderer::new(&device, format, None, 1, false);
+    let wgpu_state = egui_wgpu::RenderState {
+        adapter: Arc::clone(&adapter),
+        available_adapters: Arc::from(Vec::<wgpu::Adapter>::new()),
+        device: Arc::clone(&device),
+        queue: Arc::clone(&queue),
+        target_format: format,
+        renderer: Arc::new(egui::epaint::mutex::RwLock::new(renderer)),
+    };
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("urban-grid-offscreen-target"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bytes_per_row = width * 4;
+    let staging = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("urban-grid-offscreen-staging"),
+        size: (bytes_per_row * height) as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let egui_ctx = egui::Context::default();
+    egui_ctx.set_pixels_per_point(1.0);
+    let mut app = UrbanGridGuiApp::new_with_wgpu_state(Some(&wgpu_state), world);
+    if view == 2 {
+        app.mclp_cfg.max_stations_budget = 1;
+        let mrep = app.world.solve_mclp_station_siting(&app.mclp_cfg);
+        app.world.apply_mclp_siting_solution(&mrep);
+        app.latest_mclp_report = Some(mrep);
+        app.world.apply_tod_upzoning_tracked();
+        app.world.transit_gtfs.fare_mode = ug_core::BoardingFareMode::AllDoorFareFreeBrt;
+        app.world.transit_gtfs.coach_spec = ug_core::BusCoachSpec::Articulated60FtBrt;
+        app.world.transit_gtfs.hold_early_buses = true;
+        for _ in 0..240 {
+            app.world.step(0.1);
+        }
+        app.enter_workbench(
+            DockTab::ZoningAndTransit,
+            None,
+            HeatmapLayer::EmergencyResponse4Min,
+            ViewportTool::Inspect,
+        );
+        app.cam_zoom = 0.56;
+    } else if view == 3 {
+        let mrep = app.world.solve_mclp_station_siting(&app.mclp_cfg);
+        app.world.apply_mclp_siting_solution(&mrep);
+        app.latest_mclp_report = Some(mrep);
+
+        app.latest_stress_report = None;
+
+        let mcrep = app.world.run_seismic_monte_carlo(&app.seismic_cfg);
+        app.fragility_plot_arch = mcrep.reference_archetype;
+        app.latest_seismic_report = Some(mcrep);
+
+        app.medevac_cfg.surge = app.surge_cfg.clone();
+        app.evac_cfg.medevac = app.medevac_cfg.clone();
+
+        let mut b_cfg = app.evac_cfg.clone();
+        b_cfg.staging_strategy = ug_core::EvacuationStagingStrategy::SimultaneousUnstaged;
+        b_cfg.contraflow_policy = ug_core::ContraflowReversalPolicy::NoContraflowBaseline;
+        let b_rep = app.world.run_evacuation_contraflow_mc(&b_cfg);
+
+        let mut s_cfg = app.evac_cfg.clone();
+        s_cfg.staging_strategy = ug_core::EvacuationStagingStrategy::FireProximityThreeStage;
+        s_cfg.contraflow_policy = ug_core::ContraflowReversalPolicy::EmsProtectedArterialContraflow;
+        let s_rep = app.world.run_evacuation_contraflow_mc(&s_cfg);
+
+        app.world.apply_evacuation_contraflow_to_network(&s_rep);
+        app.evac_cfg.staging_strategy = ug_core::EvacuationStagingStrategy::FireProximityThreeStage;
+        app.evac_cfg.contraflow_policy =
+            ug_core::ContraflowReversalPolicy::EmsProtectedArterialContraflow;
+        app.evac_ab_summary = Some(format!(
+            "A/B Evac: Unstaged+NoCF P90={:.0}m, Overrun={:.0} res, EMS={:.0}% -> 3-Stage+EMS-CF P90={:.0}m, Overrun={:.0} res, EMS={:.0}% (+{:.1} lane-km, {:.1} ms)",
+            b_rep.t90_clearance_min,
+            b_rep.expected_fire_overrun_residents,
+            b_rep.ems_lz_corridor_access_preserved_pct,
+            s_rep.t90_clearance_min,
+            s_rep.expected_fire_overrun_residents,
+            s_rep.ems_lz_corridor_access_preserved_pct,
+            s_rep.contraflow_lane_km_added,
+            s_rep.solve_time_ms,
+        ));
+        app.latest_evac_report = Some(s_rep);
+
+        for _ in 0..30 {
+            app.world.step(0.05);
+        }
+        app.enter_workbench(
+            DockTab::ResilienceStress,
+            Some(StressSubMode::EvacuationContraflow),
+            HeatmapLayer::EvacuationContraflow,
+            ViewportTool::Inspect,
+        );
+        app.cam_zoom = 0.54;
+    } else {
+        app.enter_workbench(
+            DockTab::SignalsAndRoads,
+            None,
+            HeatmapLayer::Zoning,
+            ViewportTool::Inspect,
+        );
+    }
+
+    for frame_idx in 0..4u32 {
+        let raw_input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                Pos2::ZERO,
+                EguiVec2::new(width as f32, height as f32),
+            )),
+            viewports: std::iter::once((
+                egui::ViewportId::ROOT,
+                egui::ViewportInfo {
+                    native_pixels_per_point: Some(1.0),
+                    ..Default::default()
+                },
+            ))
+            .collect(),
+            time: Some(frame_idx as f64 / 60.0),
+            predicted_dt: 1.0 / 60.0,
+            ..Default::default()
+        };
+        let full_output = egui_ctx.run(raw_input, |ctx| {
+            app.ui_step(ctx);
+        });
+        let paint_jobs = egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [width, height],
+            pixels_per_point: 1.0,
+        };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("urban-grid-offscreen-encoder"),
+        });
+        let user_cmd_bufs = {
+            let mut renderer = wgpu_state.renderer.write();
+            for (id, image_delta) in &full_output.textures_delta.set {
+                renderer.update_texture(&device, &queue, *id, image_delta);
+            }
+            renderer.update_buffers(
+                &device,
+                &queue,
+                &mut encoder,
+                &paint_jobs,
+                &screen_descriptor,
+            )
+        };
+        {
+            let renderer = wgpu_state.renderer.read();
+            let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("urban-grid-offscreen-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &texture_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+            let mut render_pass = render_pass.forget_lifetime();
+            renderer.render(&mut render_pass, &paint_jobs, &screen_descriptor);
+        }
+        if frame_idx == 3 {
+            encoder.copy_texture_to_buffer(
+                wgpu::ImageCopyTexture {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::ImageCopyBuffer {
+                    buffer: &staging,
+                    layout: wgpu::ImageDataLayout {
+                        offset: 0,
+                        bytes_per_row: Some(bytes_per_row),
+                        rows_per_image: Some(height),
+                    },
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        queue.submit(user_cmd_bufs.into_iter().chain(std::iter::once(encoder.finish())));
+        device.poll(wgpu::Maintain::Wait);
+        let mut renderer = wgpu_state.renderer.write();
+        for id in &full_output.textures_delta.free {
+            renderer.free_texture(id);
+        }
+    }
+
+    let slice = staging.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |res| {
+        let _ = tx.send(res);
+    });
+    device.poll(wgpu::Maintain::Wait);
+    rx.recv()??;
+    let mapped = slice.get_mapped_range();
+    write_rgba_png(out_path, width, height, &mapped)?;
+    drop(mapped);
+    staging.unmap();
+    Ok(())
 }
 
 pub fn run_gui(world: SimulationWorld, vsync: bool) -> eframe::Result<()> {
