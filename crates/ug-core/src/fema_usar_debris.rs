@@ -903,11 +903,11 @@ pub fn run_fema_usar_debris_monte_carlo(
             }
 
             // Order USNG grids for US&R Task Force Breaching/Extrication Squads:
-            // Under CoOptimizedTeethOfComb, Canine/Delsar Hasty Search prioritizes grids with highest live-void triage score!
+            // Under CoOptimizedTeethOfComb, Canine/Delsar Hasty Search prioritizes grids by marginal `dE[Lives]/dt = S(t) / hrs_per_victim`!
             let mut grid_order: Vec<usize> = (0..n_grids).collect();
             grid_order.sort_by(|&a, &b| match cfg.policy {
                 DebrisAndUsarPolicy::UncoordinatedPerimeterHaulOff => a.cmp(&b),
-                _ => {
+                DebrisAndUsarPolicy::LogisticsPodCorridorsFirstPush => {
                     let va = g_trapped[a]
                         * coburn_spence_entrapped_survival_prob(
                             g_reopen_hr[a].min(horizon_hr),
@@ -921,6 +921,20 @@ pub fn run_fema_usar_debris_monte_carlo(
                         )
                         / (g_reopen_hr[b] + 2.0);
                     vb.partial_cmp(&va).unwrap_or(Ordering::Equal)
+                }
+                DebrisAndUsarPolicy::CoOptimizedTeethOfCombUsarAndPodPush => {
+                    let score_grid = |gi: usize| -> f64 {
+                        if g_trapped[gi] <= 0.02 || g_reopen_hr[gi] > horizon_hr {
+                            return -1.0;
+                        }
+                        let (_, _, hrs_per_vic, _) = cells[gi].dom_arch.collapse_and_rescue_specs();
+                        let t_arr = (g_reopen_hr[gi] + 0.4).max(1.0);
+                        let surv = coburn_spence_entrapped_survival_prob(t_arr, cells[gi].dom_arch);
+                        surv / (hrs_per_vic * (1.0 + 0.05 * g_reopen_hr[gi]))
+                    };
+                    score_grid(b)
+                        .partial_cmp(&score_grid(a))
+                        .unwrap_or(Ordering::Equal)
                 }
             });
 
@@ -938,16 +952,19 @@ pub fn run_fema_usar_debris_monte_carlo(
                     }
                     continue;
                 }
+                // Early local bystander / surface rescues (~18% within first 3h) occur regardless of heavy road blockage
+                let byst = trapped * 0.18;
+                g_rescued[gi] = byst;
+                rescue_events.push((3.0, byst));
+
                 if g_reopen_hr[gi] > horizon_hr {
-                    // Road never reopened within 72h: only local bystander surface rescues (~18% early)
-                    let byst = trapped * 0.18;
-                    g_rescued[gi] = byst;
+                    // Road never reopened within 72h: deep structural void victims cannot be reached by Type-1 US&R rigs
                     g_deceased[gi] = trapped - byst;
                     g_status[gi] = 0;
-                    rescue_events.push((3.0, byst));
                     continue;
                 }
 
+                let deep_trapped = (trapped - byst).max(0.0);
                 let (_, _, squad_hrs_per_vic, _) = cells[gi].dom_arch.collapse_and_rescue_specs();
                 // Canine + Delsar technical search cuts empty-void wasted breaching time by 32% under TeethOfComb!
                 let eff_hrs_per_vic = if cfg.policy
@@ -958,9 +975,9 @@ pub fn run_fema_usar_debris_monte_carlo(
                     squad_hrs_per_vic
                 };
 
-                // Split grid's trapped victims into individual extrication tasks across earliest available US&R squads
-                let n_chunks = (trapped.ceil() as usize).clamp(1, 16);
-                let vic_per_chunk = trapped / (n_chunks as f64);
+                // Split grid's remaining deep-void trapped victims into extrication tasks across earliest available US&R squads
+                let n_chunks = (deep_trapped.ceil() as usize).clamp(1, 16);
+                let vic_per_chunk = deep_trapped / (n_chunks as f64);
                 let mut completed_chunks = 0usize;
 
                 for _ in 0..n_chunks {

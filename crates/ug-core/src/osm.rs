@@ -532,6 +532,11 @@ pub fn load_osm_pbf_path(path: &Path) -> Result<RawOsmDataset, OsmError> {
             _ => {}
         })
         .map_err(|e| OsmError::Dataset(e.to_string()))?;
+    if ds.ways.is_empty() {
+        return Err(OsmError::Dataset(
+            "No drivable highway ways found in OSM PBF.".into(),
+        ));
+    }
     Ok(ds)
 }
 

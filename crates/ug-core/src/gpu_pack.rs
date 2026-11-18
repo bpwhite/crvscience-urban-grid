@@ -682,31 +682,51 @@ fn density_plasma_colormap(t: f32) -> [u8; 4] {
 }
 
 #[inline]
-fn response_time_4min_colormap(sec: f32) -> [u8; 4] {
+pub fn response_time_4min_colormap(sec: f32) -> [u8; 4] {
     if !sec.is_finite() {
-        return [136, 19, 55, 175];
+        return [136, 19, 55, 185];
     }
-    // Crisp white-cyan highlight contour right along the 240 s (4.0-minute) NFPA 1710 threshold!
-    if (234.0..=246.0).contains(&sec) {
-        return [236, 254, 255, 230];
-    }
-    let (r, g, b, a) = if sec <= 120.0 {
-        let u = (sec / 120.0).clamp(0.0, 1.0);
-        (16.0 + 20.0 * u, 195.0 + 28.0 * u, 175.0 - 45.0 * u, 178.0)
-    } else if sec <= 240.0 {
-        let u = ((sec - 120.0) / 120.0).clamp(0.0, 1.0);
-        (36.0 + 214.0 * u, 223.0 - 19.0 * u, 130.0 - 109.0 * u, 180.0)
-    } else if sec <= 360.0 {
-        let u = ((sec - 240.0) / 120.0).clamp(0.0, 1.0);
-        (250.0, 204.0 - 78.0 * u, 21.0 + 25.0 * u, 176.0)
-    } else if sec <= 480.0 {
-        let u = ((sec - 360.0) / 120.0).clamp(0.0, 1.0);
-        (248.0 - 6.0 * u, 126.0 - 68.0 * u, 46.0 + 48.0 * u, 178.0)
-    } else {
-        let u = ((sec - 480.0) / 180.0).clamp(0.0, 1.0);
-        (242.0 - 95.0 * u, 58.0 - 38.0 * u, 94.0 - 30.0 * u, 185.0)
+    let s = sec.max(0.0);
+    let lerp = |a: [f32; 3], b: [f32; 3], t: f32| -> [f32; 3] {
+        let u = t.clamp(0.0, 1.0);
+        [
+            a[0] + (b[0] - a[0]) * u,
+            a[1] + (b[1] - a[1]) * u,
+            a[2] + (b[2] - a[2]) * u,
+        ]
     };
-    [r as u8, g as u8, b as u8, a as u8]
+    let (rgb, a) = if s <= 120.0 {
+        (
+            lerp([16.0, 185.0, 129.0], [163.0, 230.0, 53.0], s / 120.0),
+            182.0,
+        )
+    } else if s <= 180.0 {
+        (
+            lerp([163.0, 230.0, 53.0], [250.0, 204.0, 21.0], (s - 120.0) / 60.0),
+            184.0,
+        )
+    } else if s <= 240.0 {
+        (
+            lerp([250.0, 204.0, 21.0], [249.0, 115.0, 22.0], (s - 180.0) / 60.0),
+            186.0,
+        )
+    } else if s <= 360.0 {
+        (
+            lerp([249.0, 115.0, 22.0], [239.0, 68.0, 68.0], (s - 240.0) / 120.0),
+            188.0,
+        )
+    } else {
+        (
+            lerp([239.0, 68.0, 68.0], [159.0, 18.0, 57.0], (s - 360.0) / 240.0),
+            192.0,
+        )
+    };
+    [
+        rgb[0].round() as u8,
+        rgb[1].round() as u8,
+        rgb[2].round() as u8,
+        a as u8,
+    ]
 }
 
 /// Builds a `256x256` RGBA8 GPU texture (`1024` bytes/row) for the active `HeatmapLayer`.
@@ -897,15 +917,59 @@ pub fn build_heatmap_rgba(
                 }
             }
 
-            // Light 5-tap smoothing for clean continuous iso-contours
+            // Light 5-tap smoothing for clean continuous iso-contours (`60, 120, 180, 240, 300, 360 s`)
             separable_blur_5tap(
                 &arena.heatmap_field_a,
                 &mut arena.heatmap_field_b,
                 &mut arena.heatmap_field_c,
             );
-            for (i, &sec) in arena.heatmap_field_c.iter().enumerate() {
-                let rgba = response_time_4min_colormap(sec);
-                arena.heatmap_rgba[i * 4..i * 4 + 4].copy_from_slice(&rgba);
+            for gy in 0..HEATMAP_DIM {
+                let ym = gy.saturating_sub(1);
+                let yp = (gy + 1).min(HEATMAP_DIM - 1);
+                for gx in 0..HEATMAP_DIM {
+                    let xm = gx.saturating_sub(1);
+                    let xp = (gx + 1).min(HEATMAP_DIM - 1);
+                    let idx = gy * HEATMAP_DIM + gx;
+                    let sec = arena.heatmap_field_c[idx];
+                    let mut rgba = response_time_4min_colormap(sec);
+                    if sec.is_finite() && sec <= 420.0 {
+                        let s_l = arena.heatmap_field_c[gy * HEATMAP_DIM + xm];
+                        let s_r = arena.heatmap_field_c[gy * HEATMAP_DIM + xp];
+                        let s_u = arena.heatmap_field_c[ym * HEATMAP_DIM + gx];
+                        let s_d = arena.heatmap_field_c[yp * HEATMAP_DIM + gx];
+                        if s_l.is_finite() && s_r.is_finite() && s_u.is_finite() && s_d.is_finite() {
+                            let dx = 0.5 * (s_r - s_l);
+                            let dy = 0.5 * (s_d - s_u);
+                            let grad = dx.hypot(dy).max(0.5);
+                            let nearest_60 = ((sec / 60.0).round() * 60.0).clamp(60.0, 360.0);
+                            let dist_px = (sec - nearest_60).abs() / grad;
+                            if (nearest_60 - 240.0).abs() < 1.0 && dist_px < 1.35 {
+                                let w = (1.0 - dist_px / 1.35).clamp(0.0, 1.0);
+                                let mix_u8 = |a: u8, b: u8| -> u8 {
+                                    (a as f32 + (b as f32 - a as f32) * w).round() as u8
+                                };
+                                rgba = [
+                                    mix_u8(rgba[0], 236),
+                                    mix_u8(rgba[1], 254),
+                                    mix_u8(rgba[2], 255),
+                                    mix_u8(rgba[3], 236),
+                                ];
+                            } else if dist_px < 0.95 {
+                                let w = ((1.0 - dist_px / 0.95) * 0.62).clamp(0.0, 1.0);
+                                let mix_u8 = |a: u8, b: u8| -> u8 {
+                                    (a as f32 + (b as f32 - a as f32) * w).round() as u8
+                                };
+                                rgba = [
+                                    mix_u8(rgba[0], 15),
+                                    mix_u8(rgba[1], 23),
+                                    mix_u8(rgba[2], 42),
+                                    mix_u8(rgba[3], 224),
+                                ];
+                            }
+                        }
+                    }
+                    arena.heatmap_rgba[idx * 4..idx * 4 + 4].copy_from_slice(&rgba);
+                }
             }
         }
         HeatmapLayer::ResponseDistricts => {

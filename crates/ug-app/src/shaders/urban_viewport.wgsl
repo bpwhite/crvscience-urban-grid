@@ -82,8 +82,8 @@ fn fs_heatmap(in: HeatmapOut) -> @location(0) vec4<f32> {
     var rgb = raw.rgb;
     var alpha = raw.a * cam.heatmap_opacity;
 
-    // Subtle topographic iso-contour bands on continuous fields (`3u..=5u`), keeping categorical `6u` ResponseDistricts crisp!
-    if ((cam.heatmap_mode >= 3u && cam.heatmap_mode <= 5u) || cam.heatmap_mode >= 7u) {
+    // Subtle topographic iso-contour bands on continuous fields (`3u..=4u` & `7u+`), keeping `5u` (baked 60s EMS contours) & `6u` ResponseDistricts crisp!
+    if (cam.heatmap_mode == 3u || cam.heatmap_mode == 4u || cam.heatmap_mode >= 7u) {
         let lum = dot(rgb, vec3<f32>(0.299, 0.587, 0.114));
         let band = abs(fract(lum * 7.0) - 0.5);
         let contour = 1.0 - smoothstep(0.0, 0.055, band);

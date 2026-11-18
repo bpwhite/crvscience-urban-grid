@@ -1068,6 +1068,7 @@ pub fn run_evacuation_contraflow_monte_carlo(
             };
 
             // 3. Assign Staged Neighborhood Evacuation Tiers (`Stage 1`, `Stage 2`, `Stage 3`)
+            //    and anchor the earliest populated stage at `t = 0.0` with bottleneck-adaptive staging.
             let mut parcel_stage = vec![1u8; n_parcels];
             let mut parcel_rel_min = vec![0.0; n_parcels];
             let mut parcel_vis_60 = vec![cfg.medevac.ambient_visibility_sm; n_parcels];
@@ -1101,10 +1102,188 @@ pub fn run_evacuation_contraflow_monte_carlo(
                     }
                 };
                 parcel_stage[pi] = stg;
-                parcel_rel_min[pi] = match stg {
-                    1 => 0.0,
-                    2 => cfg.stage2_release_delay_min.clamp(5.0, 90.0),
-                    _ => cfg.stage3_release_delay_min.clamp(10.0, 140.0),
+            }
+
+            let mut active_stages: Vec<u8> = Vec::with_capacity(3);
+            for cand_s in 1u8..=3u8 {
+                if (0..n_parcels).any(|pi| parcel_stage[pi] == cand_s && parcel_vehs[pi] > 0.0) {
+                    active_stages.push(cand_s);
+                }
+            }
+            if active_stages.is_empty() {
+                for cand_s in 1u8..=3u8 {
+                    if parcel_stage.contains(&cand_s) {
+                        active_stages.push(cand_s);
+                    }
+                }
+            }
+
+            let shelter_set: HashSet<usize> = shelter_segs.iter().copied().collect();
+            let n_active_stages = active_stages.len();
+            let mut stage_slot = [usize::MAX; 4];
+            for (slot, &stg) in active_stages.iter().enumerate() {
+                stage_slot[stg as usize] = slot;
+            }
+
+            let mut stage_seg_vehs = vec![vec![0.0f64; n_segs]; n_active_stages];
+            let mut max_delay_k = vec![0.0f64; n_active_stages];
+            let mut t_plan = vec![0.0f64; n_active_stages];
+            let mut combined_vc_stage = vec![0.0f64; n_active_stages];
+
+            if n_active_stages > 1 {
+                // Static wave-0 outbound shortest-path projection using contraflow-adjusted `eff_evac_cap_10m`
+                let mut init_open = vec![false; n_segs];
+                let mut init_trav_s = vec![f64::INFINITY; n_segs];
+                for sid in 0..n_segs {
+                    if !net.segments[sid].closed && !br_closed[sid] && eff_evac_cap_10m[sid] >= 1.0
+                    {
+                        init_open[sid] = true;
+                        let eff_v = net.segments[sid].speed_mps.clamp(2.2, 31.0);
+                        init_trav_s[sid] = net.segments[sid].length / eff_v;
+                    }
+                }
+                let mut init_dist = vec![f64::INFINITY; n_segs];
+                let mut init_next_out: Vec<Option<usize>> = vec![None; n_segs];
+                let mut init_heap = BinaryHeap::new();
+                for &sh_sid in &shelter_segs {
+                    if init_open[sh_sid] {
+                        init_dist[sh_sid] = init_trav_s[sh_sid];
+                        init_heap.push(DijkNode {
+                            cost: init_trav_s[sh_sid],
+                            id: sh_sid,
+                        });
+                    }
+                }
+                while let Some(DijkNode { cost, id }) = init_heap.pop() {
+                    if cost > init_dist[id] {
+                        continue;
+                    }
+                    for &(prev_sid, turn_pen_s) in &in_neighbors[id] {
+                        if !init_open[prev_sid] {
+                            continue;
+                        }
+                        let nc = cost + turn_pen_s + init_trav_s[prev_sid];
+                        if nc < init_dist[prev_sid] {
+                            init_dist[prev_sid] = nc;
+                            init_next_out[prev_sid] = Some(id);
+                            init_heap.push(DijkNode {
+                                cost: nc,
+                                id: prev_sid,
+                            });
+                        }
+                    }
+                }
+
+                for pi in 0..n_parcels {
+                    if parcel_vehs[pi] <= 0.0 {
+                        continue;
+                    }
+                    let slot = stage_slot[parcel_stage[pi] as usize];
+                    if slot >= n_active_stages {
+                        continue;
+                    }
+                    let base = parcel_near_seg[pi];
+                    let entry_sid = if let Some(tw) = twin_seg[base] {
+                        let d_base = init_dist[base];
+                        let d_tw = init_dist[tw];
+                        if init_open[tw]
+                            && (!init_open[base]
+                                || d_tw + 1.0 < d_base
+                                || ((d_tw - d_base).abs() <= 1.0
+                                    && eff_evac_cap_10m[tw] > eff_evac_cap_10m[base]))
+                        {
+                            tw
+                        } else {
+                            base
+                        }
+                    } else {
+                        base
+                    };
+                    let mut cur = entry_sid;
+                    let mut hops = 0usize;
+                    while hops < 8 {
+                        stage_seg_vehs[slot][cur] += parcel_vehs[pi];
+                        if shelter_set.contains(&cur) {
+                            break;
+                        }
+                        if let Some(nxt) = init_next_out[cur] {
+                            cur = nxt;
+                            hops += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
+                for k in 1..n_active_stages {
+                    let cap_delay = if n_active_stages == 2 && active_stages == [1, 3] {
+                        (cfg.stage3_release_delay_min - cfg.stage2_release_delay_min)
+                            .max(cfg.stage2_release_delay_min)
+                            .clamp(5.0, 90.0)
+                    } else if k == 1 {
+                        cfg.stage2_release_delay_min.clamp(5.0, 90.0)
+                    } else {
+                        cfg.stage3_release_delay_min.clamp(10.0, 140.0)
+                    };
+                    max_delay_k[k] = cap_delay.max(t_plan[k - 1]);
+
+                    let mut comb_vc = 0.0f64;
+                    let mut prev_clear_min = 0.0f64;
+                    for sid in 0..n_segs {
+                        let sk = stage_seg_vehs[k][sid];
+                        if sk <= 0.0 {
+                            continue;
+                        }
+                        let cum_prev: f64 =
+                            (0..k).map(|m| stage_seg_vehs[m][sid]).sum();
+                        let cap_10m = (0.88 * eff_evac_cap_10m[sid]).max(25.0);
+                        let est_vc = (0.476 * (cum_prev + sk)) / cap_10m;
+                        if est_vc > comb_vc {
+                            comb_vc = est_vc;
+                        }
+                        if cum_prev > 0.0 {
+                            let clr = cum_prev / (cap_10m / 10.0);
+                            if clr > prev_clear_min {
+                                prev_clear_min = clr;
+                            }
+                        }
+                    }
+                    combined_vc_stage[k] = comb_vc;
+                    if comb_vc <= 1.0 {
+                        t_plan[k] = (t_plan[k - 1]
+                            + ((comb_vc - 0.72).max(0.0) * 12.0))
+                            .clamp(t_plan[k - 1], max_delay_k[k]);
+                    } else {
+                        let avail = (max_delay_k[k] - t_plan[k - 1]).max(0.0);
+                        t_plan[k] = (t_plan[k - 1] + prev_clear_min.min(avail))
+                            .clamp(t_plan[k - 1], max_delay_k[k]);
+                    }
+                }
+            }
+
+            let mut stage_released = vec![false; n_active_stages];
+            let mut stage_rel_by_slot = vec![0.0f64; n_active_stages];
+            if n_active_stages > 0 {
+                stage_released[0] = true;
+                stage_rel_by_slot[0] = 0.0;
+                for k in 1..n_active_stages {
+                    if stage_released[k - 1]
+                        && (t_plan[k] <= 1e-6
+                            || (t_plan[k] < dt_min && combined_vc_stage[k] <= 0.88))
+                    {
+                        stage_released[k] = true;
+                        stage_rel_by_slot[k] = t_plan[k].max(0.0);
+                    }
+                }
+            }
+            for pi in 0..n_parcels {
+                let slot = stage_slot[parcel_stage[pi] as usize];
+                parcel_rel_min[pi] = if slot < n_active_stages && stage_released[slot] {
+                    stage_rel_by_slot[slot]
+                } else if slot < n_active_stages {
+                    f64::INFINITY
+                } else {
+                    0.0
                 };
             }
 
@@ -1113,6 +1292,8 @@ pub fn run_evacuation_contraflow_monte_carlo(
             let mut seg_peak_vc = vec![0.0f64; n_segs];
             let mut seg_therm_ever = vec![false; n_segs];
             let mut seg_smoke_v_acc = vec![0.0; n_segs];
+            let mut prev_wave_vc = vec![0.0f64; n_segs];
+            let mut prev_wave_q_rem = 0.0f64;
 
             let mut wave_evac_pct = vec![0.0; n_waves];
             let mut wave_queue_vehs = vec![0.0; n_waves];
@@ -1126,6 +1307,47 @@ pub fn run_evacuation_contraflow_monte_carlo(
             let mut peak_vc_global = 0.0f64;
 
             for wi in 0..n_waves {
+                let t0_w = (wi as f64) * dt_min;
+                if wi > 0 && n_active_stages > 1 {
+                    for k in 1..n_active_stages {
+                        if !stage_released[k] && stage_released[k - 1] {
+                            let mut shared_vc = 0.0f64;
+                            let mut shared_cap_10m = 0.0f64;
+                            for sid in 0..n_segs {
+                                if stage_seg_vehs[k][sid] > 0.0 {
+                                    shared_vc = shared_vc.max(prev_wave_vc[sid]);
+                                    shared_cap_10m += eff_evac_cap_10m[sid].max(25.0);
+                                }
+                            }
+                            let prev_q_ratio = prev_wave_q_rem / shared_cap_10m.max(1.0);
+                            let rel_opt = if t0_w >= max_delay_k[k] {
+                                Some(max_delay_k[k])
+                            } else if shared_vc <= 0.75
+                                && prev_q_ratio <= 0.25
+                                && t0_w >= stage_rel_by_slot[k - 1] + 5.0
+                                && t0_w >= t_plan[k] - 5.0
+                            {
+                                Some(t0_w)
+                            } else if t0_w + dt_min > t_plan[k] && shared_vc <= 0.90 {
+                                Some(t_plan[k].max(t0_w))
+                            } else if wi + 1 == n_waves {
+                                Some(max_delay_k[k].min(t0_w))
+                            } else {
+                                None
+                            };
+                            if let Some(t_rel) = rel_opt {
+                                stage_released[k] = true;
+                                stage_rel_by_slot[k] = t_rel;
+                                let stg_val = active_stages[k];
+                                for pi in 0..n_parcels {
+                                    if parcel_stage[pi] == stg_val {
+                                        parcel_rel_min[pi] = t_rel;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 let t_now = (wi as f64 + 0.5) * dt_min;
 
                 // Evaluate dynamic thermal road closures & Wetterberg/Intini smoke speed factors
@@ -1164,7 +1386,6 @@ pub fn run_evacuation_contraflow_monte_carlo(
                 let mut dist_to_shelter_s = vec![f64::INFINITY; n_segs];
                 let mut next_out_seg: Vec<Option<usize>> = vec![None; n_segs];
                 let mut heap = BinaryHeap::new();
-                let shelter_set: HashSet<usize> = shelter_segs.iter().copied().collect();
 
                 for &sh_sid in &shelter_segs {
                     if seg_open[sh_sid] {
@@ -1339,6 +1560,8 @@ pub fn run_evacuation_contraflow_monte_carlo(
                 wave_evac_pct[wi] = ((cumul_cleared_vehs / total_evac_vehs.max(1.0)) * 100.0)
                     .clamp(0.0, 100.0);
                 wave_queue_vehs[wi] = tot_q_rem;
+                prev_wave_vc = seg_wave_vc;
+                prev_wave_q_rem = tot_q_rem;
             }
 
             // Interpolate T50, T90, T95 network clearance times

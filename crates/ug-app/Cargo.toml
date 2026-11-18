@@ -10,8 +10,8 @@ name = "urban-grid"
 path = "src/main.rs"
 
 [features]
-default = ["gui", "tui"]
-gui = ["dep:eframe"]
+default = ["gui", "tui", "pbf", "overpass"]
+gui = ["dep:eframe", "dep:rfd"]
 tui = ["dep:ratatui", "dep:crossterm"]
 pbf = ["ug-core/pbf"]
 overpass = ["ug-core/overpass"]
@@ -23,6 +23,11 @@ rayon.workspace = true
 clap = { version = "4.5", features = ["derive"] }
 serde.workspace = true
 serde_json.workspace = true
+png = "0.18"
+rfd = { version = "0.15", optional = true }
 eframe = { version = "0.30", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "x11", "wayland"], optional = true }
 ratatui = { version = "0.28", optional = true }
 crossterm = { version = "0.28", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }

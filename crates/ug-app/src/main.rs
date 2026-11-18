@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://gnu.org>.
 
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod batch;
 #[cfg(feature = "gui")]
 mod gui;
@@ -1092,7 +1094,20 @@ fn build_world(
     Ok(world)
 }
 
+#[cfg(windows)]
+fn attach_parent_console_if_cli() {
+    if std::env::args_os().len() > 1 {
+        unsafe {
+            windows_sys::Win32::System::Console::AttachConsole(
+                windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS,
+            );
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    attach_parent_console_if_cli();
     let cli = Cli::parse();
     match cli.command.unwrap_or(Commands::Gui {
         scenario: BuiltinScenario::RiverfrontBridges,

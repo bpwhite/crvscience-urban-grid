@@ -159,7 +159,7 @@ pub use hospital_surge::{
     HOSPITAL_SURGE_FACILITY_CSV_HEADER, HOSPITAL_SURGE_PARCEL_CSV_HEADER,
 };
 pub use gpu_pack::{
-    build_heatmap_rgba, pack_agents_into, pack_road_quads_into,
+    build_heatmap_rgba, pack_agents_into, pack_road_quads_into, response_time_4min_colormap,
     step_plume_advection_diffusion_cpu, GpuAgentInstance, GpuCameraUniform,
     GpuPlumeComputeUniform, GpuRoadQuadInstance, GpuStagingArena, HeatmapLayer,
     PlumePhysicsParams, AGENT_FLAG_BLINK_LEFT,
@@ -3638,5 +3638,452 @@ Axis-SummitLookout,ALERTWest,PTZ,40.018,-105.031,230,95,40,true
             }
         }
         assert_ne!(signatures[0], signatures[2]);
+    }
+
+    #[test]
+    fn test_staged_evacuation_earliest_populated_stage_departs_at_t0() {
+        let xml = builtin_riverfront_bridges_osm();
+        let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
+        let mut world = SimulationWorld::new(net);
+
+        let mut cfg = EvacuationContraflowConfig::default();
+        cfg.staging_strategy = EvacuationStagingStrategy::FireProximityThreeStage;
+        cfg.contraflow_policy = ContraflowReversalPolicy::EmsProtectedArterialContraflow;
+        cfg.stage2_release_delay_min = 25.0;
+        cfg.stage3_release_delay_min = 50.0;
+        cfg.medevac.surge.ffe.seismic.moment_magnitude_mw = 6.2;
+        cfg.medevac.surge.ffe.seismic.rupture_standoff_km = 35.0;
+        cfg.medevac.surge.ffe.seismic.seismic_pipe_replacement_pct = 100.0;
+        cfg.medevac.surge.ffe.seismic.monte_carlo_trials = 16;
+
+        let report = world.run_evacuation_contraflow_mc(&cfg);
+        let min_rel = report
+            .parcel_rows
+            .iter()
+            .filter(|r| r.evac_vehicles > 0.0)
+            .map(|r| r.release_delay_min)
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            min_rel < 1e-6,
+            "earliest populated evacuation stage must depart at t=0, got min release_delay_min={min_rel}"
+        );
+        assert!(
+            !report.timeline.is_empty() && report.timeline[0].evacuated_pct > 0.0,
+            "wave 0 (t=10m) must show non-zero evacuation throughput instead of dead air"
+        );
+        assert!(
+            report.t50_clearance_min < 35.0,
+            "expected no +42..+45m dead-air inflation, got T50={:.2}m",
+            report.t50_clearance_min
+        );
+    }
+
+    #[test]
+    fn test_staged_evacuation_bottleneck_adaptive_spacing_couples_to_capacity() {
+        let xml = builtin_foothill_canyon_wui_osm();
+        let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
+        let mut world = SimulationWorld::new(net);
+
+        let mut base_cfg = EvacuationContraflowConfig::default();
+        base_cfg.staging_strategy = EvacuationStagingStrategy::SimultaneousUnstaged;
+        base_cfg.contraflow_policy = ContraflowReversalPolicy::NoContraflowBaseline;
+        base_cfg.stage2_release_delay_min = 25.0;
+        base_cfg.stage3_release_delay_min = 55.0;
+        base_cfg.medevac.surge.ffe.seismic.moment_magnitude_mw = 8.2;
+        base_cfg.medevac.surge.ffe.seismic.monte_carlo_trials = 24;
+
+        let unstaged = world.run_evacuation_contraflow_mc(&base_cfg);
+
+        let mut staged_cfg = base_cfg.clone();
+        staged_cfg.staging_strategy = EvacuationStagingStrategy::FireProximityThreeStage;
+        staged_cfg.contraflow_policy = ContraflowReversalPolicy::EmsProtectedArterialContraflow;
+        let ems_cf = world.run_evacuation_contraflow_mc(&staged_cfg);
+
+        assert!(
+            !ems_cf.timeline.is_empty() && ems_cf.timeline[0].evacuated_pct > 0.0,
+            "earliest populated stage must depart at t=0 across MC trials, yielding >0% wave-0 evacuation"
+        );
+
+        for row in &ems_cf.parcel_rows {
+            assert!(
+                row.release_delay_min <= staged_cfg.stage3_release_delay_min + 1e-6,
+                "parcel release delay ({:.2}) exceeded stage3 cap ({:.2})",
+                row.release_delay_min,
+                staged_cfg.stage3_release_delay_min
+            );
+        }
+        assert!(
+            ems_cf.peak_bottleneck_vc_ratio <= unstaged.peak_bottleneck_vc_ratio + 0.05,
+            "staged+CF peak V/C ({:.3}) should not degrade materially over unstaged ({:.3})",
+            ems_cf.peak_bottleneck_vc_ratio,
+            unstaged.peak_bottleneck_vc_ratio
+        );
+    }
+
+    #[test]
+    fn test_zoning_prunes_all_off_road_and_water_parcels_across_morphologies() {
+        fn dist_pt_seg(p: Vec2, a: Vec2, b: Vec2) -> f64 {
+            let abx = b.x - a.x;
+            let aby = b.y - a.y;
+            let len2 = abx * abx + aby * aby;
+            if len2 <= 1e-9 {
+                return p.dist(a);
+            }
+            let t = (((p.x - a.x) * abx + (p.y - a.y) * aby) / len2).clamp(0.0, 1.0);
+            p.dist(Vec2 {
+                x: a.x + t * abx,
+                y: a.y + t * aby,
+            })
+        }
+        fn pt_in_poly(p: Vec2, poly: &[Vec2]) -> bool {
+            if poly.len() < 3 {
+                return false;
+            }
+            let mut inside = false;
+            let mut j = poly.len() - 1;
+            for i in 0..poly.len() {
+                let pi = poly[i];
+                let pj = poly[j];
+                let intersects = ((pi.y > p.y) != (pj.y > p.y))
+                    && (p.x < (pj.x - pi.x) * (p.y - pi.y) / ((pj.y - pi.y) + 1e-12) + pi.x);
+                if intersects {
+                    inside = !inside;
+                }
+                j = i;
+            }
+            inside
+        }
+
+        let scenarios = [
+            builtin_riverfront_bridges_osm(),
+            builtin_harbor_peninsula_osm(),
+            builtin_radial_ring_plazas_osm(),
+            builtin_foothill_canyon_wui_osm(),
+            builtin_metropolis_50k_osm(),
+            builtin_roundabout_osm(),
+            builtin_braess_diamond_osm(),
+        ];
+        for (idx, xml) in scenarios.iter().enumerate() {
+            let osm = parse_osm_xml_str(xml).unwrap();
+            let net = RoadNetwork::compile(&osm);
+            let parcels = generate_parcels_for_network(&net);
+            assert!(!parcels.is_empty(), "scenario {idx} generated 0 parcels");
+
+            if net.city_label.to_ascii_lowercase().contains("harbor") {
+                assert!(
+                    parcels.iter().any(|p| p.center.x > 215.0 && p.center.y > 140.0),
+                    "Harbor Port Peninsula must retain parcels"
+                );
+            }
+            if net.city_label.to_ascii_lowercase().contains("radial") {
+                assert!(
+                    parcels.iter().any(|p| p.center.x.hypot(p.center.y) < 125.0),
+                    "Radial central park must retain parcels"
+                );
+            }
+
+            for p in &parcels {
+                let min_road_d = net
+                    .segments
+                    .iter()
+                    .filter(|s| !s.closed)
+                    .flat_map(|s| s.base_pts.windows(2))
+                    .map(|w| dist_pt_seg(p.center, w[0], w[1]))
+                    .fold(f64::INFINITY, f64::min);
+                assert!(
+                    min_road_d <= 115.0 + 1e-6,
+                    "scenario {idx} ({}) parcel #{} at ({:.1},{:.1}) is off-road ({min_road_d:.1} m)",
+                    net.city_label,
+                    p.id,
+                    p.center.x,
+                    p.center.y
+                );
+
+                let pts = [
+                    p.center,
+                    p.min,
+                    Vec2 { x: p.max.x, y: p.min.y },
+                    p.max,
+                    Vec2 { x: p.min.x, y: p.max.y },
+                    Vec2 { x: p.min.x, y: p.center.y },
+                    Vec2 { x: p.max.x, y: p.center.y },
+                    Vec2 { x: p.center.x, y: p.min.y },
+                    Vec2 { x: p.center.x, y: p.max.y },
+                ];
+                for wf in &net.water_features {
+                    if wf.is_polygon {
+                        for &pt in &pts {
+                            assert!(
+                                !pt_in_poly(pt, &wf.pts),
+                                "scenario {idx} parcel #{} sample point ({:.1},{:.1}) falls inside water polygon",
+                                p.id, pt.x, pt.y
+                            );
+                        }
+                    } else {
+                        for &pt in &pts {
+                            let d = wf
+                                .pts
+                                .windows(2)
+                                .map(|w| dist_pt_seg(pt, w[0], w[1]))
+                                .fold(f64::INFINITY, f64::min);
+                            assert!(
+                                d >= wf.half_width_m,
+                                "scenario {idx} parcel #{} sample point overlaps linear waterway ({d:.1} < {:.1})",
+                                p.id, wf.half_width_m
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_ems_response_4min_colormap_and_contours_harbor_peninsula() {
+        let c0 = response_time_4min_colormap(0.0);
+        let c120 = response_time_4min_colormap(120.0);
+        let c240 = response_time_4min_colormap(240.0);
+        let c360 = response_time_4min_colormap(360.0);
+        assert_ne!(c0, c120);
+        assert_ne!(c120, c240);
+        assert_ne!(c240, c360);
+
+        let osm = parse_osm_xml_str(&builtin_harbor_peninsula_osm()).unwrap();
+        let mut world = SimulationWorld::new(RoadNetwork::compile(&osm));
+        let mut cfg = MclpSitingConfig::default();
+        cfg.max_stations_budget = 1;
+        let mrep = world.solve_mclp_station_siting(&cfg);
+        world.apply_mclp_siting_solution(&mrep);
+
+        let mut arena = GpuStagingArena::new();
+        build_heatmap_rgba(&world, HeatmapLayer::EmergencyResponse4Min, &[], &mut arena);
+
+        let distinct_colors: std::collections::HashSet<[u8; 3]> = arena
+            .heatmap_rgba
+            .chunks_exact(4)
+            .filter(|px| px[3] > 0)
+            .map(|px| [px[0], px[1], px[2]])
+            .collect();
+        assert!(
+            distinct_colors.len() > 16,
+            "Harbor Peninsula EMS heatmap must have smooth continuous gradients/contours, got only {} distinct colors",
+            distinct_colors.len()
+        );
+    }
+
+    #[test]
+    fn test_overpass_json_and_pbf_paths_offline_safe() {
+        let overpass_json = r#"{
+            "elements": [
+                {"type":"node","id":1,"lat":40.000,"lon":-105.002},
+                {"type":"node","id":2,"lat":40.000,"lon":-105.000},
+                {"type":"node","id":3,"lat":40.002,"lon":-105.000},
+                {"type":"way","id":10,"nodes":[1,2,3],"tags":{"highway":"primary","lanes":"2","name":"Offline Ave"}}
+            ]
+        }"#;
+        let ds = parse_overpass_json_str(overpass_json).expect("offline Overpass JSON parses");
+        let net = RoadNetwork::compile(&ds);
+        assert!(!net.segments.is_empty());
+
+        #[cfg(feature = "pbf")]
+        {
+            let missing_err = load_osm_path(std::path::Path::new("nonexistent_test_map_12345.pbf"));
+            assert!(matches!(missing_err, Err(OsmError::Dataset(_))));
+
+            let tmp_pbf = std::env::temp_dir().join("ug_invalid_offline_test.pbf");
+            std::fs::write(&tmp_pbf, b"not_a_valid_osmpbf_file").unwrap();
+            let bad_err = load_osm_path(&tmp_pbf);
+            let _ = std::fs::remove_file(&tmp_pbf);
+            assert!(matches!(bad_err, Err(OsmError::Dataset(_))));
+
+            let empty_pbf = std::env::temp_dir().join("ug_empty_offline_test.pbf");
+            std::fs::write(&empty_pbf, b"").unwrap();
+            let empty_err = load_osm_path(&empty_pbf);
+            let _ = std::fs::remove_file(&empty_pbf);
+            assert!(matches!(empty_err, Err(OsmError::Dataset(_))));
+        }
+    }
+
+    #[test]
+    fn test_zoning_prunes_linear_waterway_quarter_edge_overlap() {
+        fn dist_pt_seg(p: Vec2, a: Vec2, b: Vec2) -> f64 {
+            let abx = b.x - a.x;
+            let aby = b.y - a.y;
+            let len2 = abx * abx + aby * aby;
+            if len2 <= 1e-9 {
+                return p.dist(a);
+            }
+            let t = (((p.x - a.x) * abx + (p.y - a.y) * aby) / len2).clamp(0.0, 1.0);
+            p.dist(Vec2 {
+                x: a.x + t * abx,
+                y: a.y + t * aby,
+            })
+        }
+        fn dist_pt_rect(p: Vec2, min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> f64 {
+            let dx = if p.x < min_x {
+                min_x - p.x
+            } else if p.x > max_x {
+                p.x - max_x
+            } else {
+                0.0
+            };
+            let dy = if p.y < min_y {
+                min_y - p.y
+            } else if p.y > max_y {
+                p.y - max_y
+            } else {
+                0.0
+            };
+            dx.hypot(dy)
+        }
+        fn seg_hits_rect_local(
+            a: Vec2,
+            b: Vec2,
+            min_x: f64,
+            max_x: f64,
+            min_y: f64,
+            max_y: f64,
+        ) -> bool {
+            let mut t0 = 0.0_f64;
+            let mut t1 = 1.0_f64;
+            let dx = b.x - a.x;
+            let dy = b.y - a.y;
+            for (p, q) in [
+                (-dx, a.x - min_x),
+                (dx, max_x - a.x),
+                (-dy, a.y - min_y),
+                (dy, max_y - a.y),
+            ] {
+                if p.abs() <= 1e-12 {
+                    if q < 0.0 {
+                        return false;
+                    }
+                } else {
+                    let r = q / p;
+                    if p < 0.0 {
+                        t0 = t0.max(r);
+                    } else {
+                        t1 = t1.min(r);
+                    }
+                    if t0 > t1 {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+        fn exact_seg_to_rect(a: Vec2, b: Vec2, p: &Parcel) -> f64 {
+            if seg_hits_rect_local(a, b, p.min.x, p.max.x, p.min.y, p.max.y) {
+                return 0.0;
+            }
+            let tl = p.min;
+            let tr = Vec2 { x: p.max.x, y: p.min.y };
+            let br = p.max;
+            let bl = Vec2 { x: p.min.x, y: p.max.y };
+            dist_pt_rect(a, p.min.x, p.max.x, p.min.y, p.max.y)
+                .min(dist_pt_rect(b, p.min.x, p.max.x, p.min.y, p.max.y))
+                .min(dist_pt_seg(tl, a, b))
+                .min(dist_pt_seg(tr, a, b))
+                .min(dist_pt_seg(br, a, b))
+                .min(dist_pt_seg(bl, a, b))
+        }
+
+        // 1. Adversarial quarter-edge linear waterway tip (27.0 m outside edge, half_width_m = 30.0)
+        let osm = parse_osm_xml_str(&builtin_roundabout_osm()).unwrap();
+        let mut net = RoadNetwork::compile(&osm);
+        let base_parcels = generate_parcels_for_network(&net);
+        assert!(!base_parcels.is_empty());
+        let p0 = &base_parcels[0];
+        let pw = p0.max.x - p0.min.x;
+        let tip_x = p0.min.x + 0.25 * pw;
+        let tip_y = p0.min.y - 27.0;
+        let wf = WaterFeature {
+            name: "Quarter-Edge River Tip".to_string(),
+            kind: "river".to_string(),
+            pts: vec![
+                Vec2 {
+                    x: tip_x,
+                    y: tip_y - 80.0,
+                },
+                Vec2 { x: tip_x, y: tip_y },
+            ],
+            half_width_m: 30.0,
+            is_polygon: false,
+        };
+        net.water_features.push(wf);
+        let pruned_parcels = generate_parcels_for_network(&net);
+        assert!(!pruned_parcels.is_empty());
+        assert!(
+            pruned_parcels.len() < base_parcels.len(),
+            "adversarial quarter-edge parcel must be pruned (base={}, pruned={})",
+            base_parcels.len(),
+            pruned_parcels.len()
+        );
+        for p in &pruned_parcels {
+            for wf in &net.water_features {
+                if !wf.is_polygon {
+                    let d = wf
+                        .pts
+                        .windows(2)
+                        .map(|w| exact_seg_to_rect(w[0], w[1], p))
+                        .fold(f64::INFINITY, f64::min);
+                    assert!(
+                        d >= wf.half_width_m,
+                        "parcel #{} overlaps linear waterway '{}' ({:.2}m < {:.2}m)",
+                        p.id,
+                        wf.name,
+                        d,
+                        wf.half_width_m
+                    );
+                }
+            }
+        }
+
+        // 2. Verify all 7 built-in cities retain healthy non-empty parcels with 0 exact linear water overlaps
+        let scenarios = [
+            builtin_riverfront_bridges_osm(),
+            builtin_harbor_peninsula_osm(),
+            builtin_radial_ring_plazas_osm(),
+            builtin_foothill_canyon_wui_osm(),
+            builtin_metropolis_50k_osm(),
+            builtin_roundabout_osm(),
+            builtin_braess_diamond_osm(),
+        ];
+        for (idx, xml) in scenarios.iter().enumerate() {
+            let net = RoadNetwork::compile(&parse_osm_xml_str(xml).unwrap());
+            let parcels = generate_parcels_for_network(&net);
+            assert!(!parcels.is_empty(), "scenario {idx} generated 0 parcels");
+            if net.city_label.to_ascii_lowercase().contains("harbor") {
+                assert!(
+                    parcels.iter().any(|p| p.center.x > 215.0 && p.center.y > 140.0),
+                    "Harbor Port Peninsula must retain parcels"
+                );
+            }
+            if net.city_label.to_ascii_lowercase().contains("radial") {
+                assert!(
+                    parcels.iter().any(|p| p.center.x.hypot(p.center.y) < 125.0),
+                    "Radial central park must retain parcels"
+                );
+            }
+            for p in &parcels {
+                for wf in &net.water_features {
+                    if !wf.is_polygon {
+                        let d = wf
+                            .pts
+                            .windows(2)
+                            .map(|w| exact_seg_to_rect(w[0], w[1], p))
+                            .fold(f64::INFINITY, f64::min);
+                        assert!(
+                            d >= wf.half_width_m,
+                            "scenario {idx} parcel #{} overlaps linear waterway '{}' ({:.2}m < {:.2}m)",
+                            p.id,
+                            wf.name,
+                            d,
+                            wf.half_width_m
+                        );
+                    }
+                }
+            }
+        }
     }
 }

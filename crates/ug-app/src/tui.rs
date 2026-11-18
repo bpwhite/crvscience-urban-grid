@@ -36,6 +36,7 @@ pub fn run_tui(mut world: SimulationWorld) -> std::io::Result<()> {
 
     let mut paused = false;
     let mut last_tick = Instant::now();
+    let mut status_msg: Option<(String, bool)> = None;
 
     loop {
         if event::poll(Duration::from_millis(33))? {
@@ -83,15 +84,35 @@ pub fn run_tui(mut world: SimulationWorld) -> std::io::Result<()> {
                         let _ = world.dispatch_emergency_responder();
                     }
                     KeyCode::Char('s') => {
-                        let _ = world.save_snapshot_json(
+                        match world.save_snapshot_json(
                             Path::new("exports/tui_snapshot.json"),
                             PlumePhysicsParams::default(),
                             "TUI Snapshot",
                             world.total_active_agents() <= 15_000,
-                        );
+                        ) {
+                            Ok(bytes) => {
+                                status_msg = Some((
+                                    format!("Saved exports/tui_snapshot.json ({bytes} B)"),
+                                    false,
+                                ));
+                            }
+                            Err(e) => {
+                                status_msg = Some((format!("Snapshot save failed: {e}"), true));
+                            }
+                        }
                     }
                     KeyCode::Char('e') => {
-                        let _ = world.export_telemetry_csv(Path::new("exports/tui_telemetry.csv"));
+                        match world.export_telemetry_csv(Path::new("exports/tui_telemetry.csv")) {
+                            Ok(rows) => {
+                                status_msg = Some((
+                                    format!("Exported {rows} rows -> exports/tui_telemetry.csv"),
+                                    false,
+                                ));
+                            }
+                            Err(e) => {
+                                status_msg = Some((format!("CSV export failed: {e}"), true));
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -119,18 +140,23 @@ pub fn run_tui(mut world: SimulationWorld) -> std::io::Result<()> {
                 ])
                 .split(f.area());
 
+            let status_sfx = match &status_msg {
+                Some((msg, _)) => format!(" | {msg}"),
+                None => String::new(),
+            };
             let header = Paragraph::new(Line::from(vec![
                 Span::styled(
-                    " urban-grid v2.2 TUI ",
+                    " urban-grid v5.2 TUI ",
                     Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(format!(
-                    "| t={:.1}s | Veh={} Queued={} | Speed={:.1} mph | HCM LOS {} | [Space] Pause [V] Dispatch EV [M] MP [T] TOD [U/R] Undo [S] JSON [E] CSV [Q] Quit",
+                    "| t={:.1}s | Veh={} Queued={} | Speed={:.1} mph | HCM LOS {} | [Space] Pause [V] Dispatch EV [M] MP [T] TOD [U/R] Undo [S] JSON [E] CSV [Q] Quit{}",
                     world.sim_time_s,
                     world.vehicles.len(),
                     world.queued_vehicles(),
                     world.mean_speed_mph(),
-                    world.ledger.hcm_los
+                    world.ledger.hcm_los,
+                    status_sfx
                 )),
             ]))
             .block(Block::default().borders(Borders::ALL).title("Simulation Telemetry"));

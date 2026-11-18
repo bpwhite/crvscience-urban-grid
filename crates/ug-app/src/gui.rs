@@ -70,6 +70,170 @@ use ug_core::{
 
 const FIXED_PHYSICS_DT: f64 = 1.0 / 60.0;
 
+fn app_icon_data() -> egui::IconData {
+    egui::IconData {
+        rgba: include_bytes!(concat!(env!("OUT_DIR"), "/urban_grid_icon_64.rgba")).to_vec(),
+        width: 64,
+        height: 64,
+    }
+}
+
+fn pick_open_path(filter_name: &str, extensions: &[&str], current: &str) -> Option<String> {
+    let mut dlg = rfd::FileDialog::new().add_filter(filter_name, extensions);
+    let cur_path = Path::new(current);
+    if let Some(parent) = cur_path.parent() {
+        if parent.is_dir() {
+            dlg = dlg.set_directory(parent);
+        }
+    }
+    dlg.pick_file().map(|p| p.to_string_lossy().into_owned())
+}
+
+fn pick_save_path(filter_name: &str, extensions: &[&str], current: &str) -> Option<String> {
+    let mut dlg = rfd::FileDialog::new().add_filter(filter_name, extensions);
+    let cur_path = Path::new(current);
+    if let Some(parent) = cur_path.parent() {
+        if parent.is_dir() {
+            dlg = dlg.set_directory(parent);
+        }
+    }
+    if let Some(name) = cur_path.file_name().and_then(|n| n.to_str()) {
+        if !name.is_empty() {
+            dlg = dlg.set_file_name(name);
+        }
+    }
+    dlg.save_file().map(|p| p.to_string_lossy().into_owned())
+}
+
+fn csv_browse_button(ui: &mut egui::Ui, path: &mut String) {
+    if ui
+        .small_button("Browse...")
+        .on_hover_text("Select output CSV path via native Save dialog")
+        .clicked()
+    {
+        if let Some(picked) = pick_save_path("CSV Files", &["csv"], path) {
+            *path = picked;
+        }
+    }
+}
+
+struct LabelPlacer {
+    bounds: Rect,
+    occupied: Vec<Rect>,
+}
+
+impl LabelPlacer {
+    fn new(bounds: Rect) -> Self {
+        Self {
+            bounds,
+            occupied: Vec::with_capacity(64),
+        }
+    }
+
+    fn reserve(&mut self, r: Rect) {
+        self.occupied.push(r.expand(2.0));
+    }
+
+    fn place_badge(
+        &mut self,
+        painter: &egui::Painter,
+        anchor: Pos2,
+        text: &str,
+        font: egui::FontId,
+        fg: Color32,
+        bg: Color32,
+        preferred_offsets: &[EguiVec2],
+        allow_fallback: bool,
+    ) -> Option<Rect> {
+        let galley = painter.layout_no_wrap(text.to_string(), font, fg);
+        let box_size = galley.size() + EguiVec2::new(8.0, 4.0);
+        let pad_rect = |center: Pos2| -> Rect {
+            Rect::from_center_size(center, box_size)
+        };
+        let in_bounds = |r: Rect| -> bool {
+            r.left() >= self.bounds.left() + 4.0
+                && r.right() <= self.bounds.right() - 4.0
+                && r.top() >= self.bounds.top() + 4.0
+                && r.bottom() <= self.bounds.bottom() - 4.0
+        };
+        let overlaps_any = |r: Rect, occ: &[Rect]| -> bool {
+            occ.iter().any(|o| o.intersects(r))
+        };
+
+        let mut chosen: Option<(Rect, EguiVec2)> = None;
+        for &off in preferred_offsets {
+            let cand = pad_rect(anchor + off);
+            if in_bounds(cand) && !overlaps_any(cand, &self.occupied) {
+                chosen = Some((cand, off));
+                break;
+            }
+        }
+
+        if chosen.is_none() && allow_fallback {
+            // Probe radial rings around anchor before giving up
+            let mut best: Option<(f32, Rect, EguiVec2)> = None;
+            for ring in [24.0f32, 38.0, 52.0] {
+                for step in 0..8 {
+                    let ang = (step as f32) * std::f32::consts::FRAC_PI_4;
+                    let off = EguiVec2::new(ang.cos() * ring, ang.sin() * ring);
+                    let cand = pad_rect(anchor + off);
+                    if !in_bounds(cand) {
+                        continue;
+                    }
+                    let overlap_area: f32 = self
+                        .occupied
+                        .iter()
+                        .map(|o| {
+                            let inter = o.intersect(cand);
+                            if inter.is_positive() {
+                                inter.width() * inter.height()
+                            } else {
+                                0.0
+                            }
+                        })
+                        .sum();
+                    if overlap_area <= 0.1 {
+                        chosen = Some((cand, off));
+                        break;
+                    }
+                    if best
+                        .as_ref()
+                        .map(|(a, _, _)| overlap_area < *a)
+                        .unwrap_or(true)
+                    {
+                        best = Some((overlap_area, cand, off));
+                    }
+                }
+                if chosen.is_some() {
+                    break;
+                }
+            }
+            if chosen.is_none() {
+                if let Some((_, cand, off)) = best {
+                    chosen = Some((cand, off));
+                }
+            }
+        }
+
+        let (rect, off) = chosen?;
+        if off.length() > 20.0 {
+            let edge_pt = rect.center();
+            painter.line_segment(
+                [anchor, edge_pt],
+                Stroke::new(1.0, Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 120)),
+            );
+        }
+        painter.rect_filled(rect, 3.0, bg);
+        painter.galley(
+            Pos2::new(rect.left() + 4.0, rect.top() + 2.0),
+            galley,
+            fg,
+        );
+        self.occupied.push(rect.expand(2.0));
+        Some(rect)
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum ViewportTool {
     Inspect,
@@ -322,6 +486,8 @@ pub struct UrbanGridGuiApp {
     csv_export_path: String,
     save_include_agents: bool,
     io_status_msg: String,
+    io_status_is_error: bool,
+    about_open: bool,
     sweep_cfg: BatchExperimentConfig,
     sweep_scales_input: String,
     sweep_bg_threads: usize,
@@ -362,7 +528,7 @@ impl UrbanGridGuiApp {
         }
 
         // Seed staged ready traffic cleanly at t = 0.0 s without running physics ahead of user launch.
-        if world.total_active_agents() < 200 {
+        if world.vehicles.is_empty() {
             world.seed_initial_traffic(280);
         }
         let b = world.network.bounds;
@@ -497,6 +663,8 @@ impl UrbanGridGuiApp {
             csv_export_path: "exports/telemetry_timeseries.csv".to_string(),
             save_include_agents: true,
             io_status_msg: String::new(),
+            io_status_is_error: false,
+            about_open: false,
             sweep_cfg: BatchExperimentConfig {
                 duration_s: 120.0,
                 warmup_s: 25.0,
@@ -528,7 +696,7 @@ impl UrbanGridGuiApp {
         let scales = match parse_demand_scales_arg(&self.sweep_scales_input) {
             Ok(v) => v,
             Err(e) => {
-                self.io_status_msg = format!("Sweep config error: {e}");
+                self.set_io_err(format!("Sweep config error: {e}"));
                 return;
             }
         };
@@ -580,12 +748,12 @@ impl UrbanGridGuiApp {
                     tracker,
                     worker_threads: bg_threads,
                 });
-                self.io_status_msg = format!(
+                self.set_io_ok(format!(
                     "Launched async Rayon sweep on {bg_threads} background threads..."
-                );
+                ));
             }
             Err(e) => {
-                self.io_status_msg = format!("Thread spawn error: {e}");
+                self.set_io_err(format!("Thread spawn error: {e}"));
             }
         }
     }
@@ -596,24 +764,24 @@ impl UrbanGridGuiApp {
         };
         match handle.rx.try_recv() {
             Ok(Ok(Some(report))) => {
-                self.io_status_msg = format!(
+                self.set_io_ok(format!(
                     "Sweep finished: {} runs in {:.0} ms ({:.0}x real-time)",
                     report.total_parallel_runs, report.wall_clock_ms, report.realtime_speedup_x
-                );
+                ));
                 self.latest_sweep_report = Some(report);
                 self.active_sweep = None;
             }
             Ok(Ok(None)) => {
-                self.io_status_msg = "Background Rayon sweep cancelled.".to_string();
+                self.set_io_ok("Background Rayon sweep cancelled.");
                 self.active_sweep = None;
             }
             Ok(Err(err_msg)) => {
-                self.io_status_msg = format!("Sweep failed: {err_msg}");
+                self.set_io_err(format!("Sweep failed: {err_msg}"));
                 self.active_sweep = None;
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
-                self.io_status_msg = "Background sweep worker disconnected.".to_string();
+                self.set_io_err("Background sweep worker disconnected.");
                 self.active_sweep = None;
             }
         }
@@ -633,15 +801,15 @@ impl UrbanGridGuiApp {
             self.draw_start_world = None;
             self.clamp_selection_indices();
             self.heatmap_dirty = true;
-            self.io_status_msg = format!(
+            self.set_io_ok(format!(
                 "Undid [{}]: {} ({} undo / {} redo)",
                 out.category.short_tag(),
                 out.label,
                 out.undo_remaining,
                 out.redo_remaining
-            );
+            ));
         } else {
-            self.io_status_msg = "Undo stack is empty.".to_string();
+            self.set_io_ok("Undo stack is empty.");
         }
     }
 
@@ -650,15 +818,15 @@ impl UrbanGridGuiApp {
             self.draw_start_world = None;
             self.clamp_selection_indices();
             self.heatmap_dirty = true;
-            self.io_status_msg = format!(
+            self.set_io_ok(format!(
                 "Redid [{}]: {} ({} undo / {} redo)",
                 out.category.short_tag(),
                 out.label,
                 out.undo_remaining,
                 out.redo_remaining
-            );
+            ));
         } else {
-            self.io_status_msg = "Redo stack is empty.".to_string();
+            self.set_io_ok("Redo stack is empty.");
         }
     }
 
@@ -1192,26 +1360,22 @@ impl UrbanGridGuiApp {
                                         egui::TextEdit::singleline(&mut self.snapshot_path)
                                             .desired_width(210.0),
                                     );
+                                    if ui
+                                        .button("Browse...")
+                                        .on_hover_text("Choose a scenario snapshot JSON via native Open dialog")
+                                        .clicked()
+                                    {
+                                        if let Some(picked) = pick_open_path(
+                                            "JSON Snapshots",
+                                            &["json"],
+                                            &self.snapshot_path,
+                                        ) {
+                                            self.snapshot_path = picked;
+                                        }
+                                    }
                                     if ui.button("Load Snapshot & Open Map").clicked() {
-                                        if let Ok((loaded_world, loaded_plume)) =
-                                            SimulationWorld::load_snapshot_json(Path::new(
-                                                &self.snapshot_path,
-                                            ))
-                                        {
-                                            let b = loaded_world.network.bounds;
-                                            let span =
-                                                (b.max_x - b.min_x).max(b.max_y - b.min_y).max(200.0);
-                                            self.cam_x = 0.5 * (b.min_x + b.max_x);
-                                            self.cam_y = 0.5 * (b.min_y + b.max_y);
-                                            self.cam_zoom = (760.0 / span).clamp(0.28, 2.2);
-                                            self.selected_junction = 0;
-                                            self.selected_segment = loaded_world.watched_segment_id;
-                                            self.plume_params = loaded_plume;
-                                            self.active_city_name = loaded_world.network.city_label.clone();
-                                            self.world = loaded_world;
-                                            self.heatmap_dirty = true;
-                                            self.plume_reset_pending = true;
-                                            self.paused = true;
+                                        let path_str = self.snapshot_path.clone();
+                                        if self.load_snapshot_from_path(&path_str) {
                                             self.screen = GuiScreen::ActiveWorkbench;
                                         }
                                     }
@@ -1756,6 +1920,86 @@ impl UrbanGridGuiApp {
 }
 
 impl UrbanGridGuiApp {
+    fn set_io_ok(&mut self, msg: impl Into<String>) {
+        self.io_status_msg = msg.into();
+        self.io_status_is_error = false;
+    }
+
+    fn set_io_err(&mut self, msg: impl Into<String>) {
+        self.io_status_msg = msg.into();
+        self.io_status_is_error = true;
+    }
+
+    fn render_about_window(&mut self, ctx: &egui::Context) {
+        if !self.about_open {
+            return;
+        }
+        let mut open = self.about_open;
+        egui::Window::new("About Urban-Grid")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                ui.heading(format!("Urban-Grid v{}", env!("CARGO_PKG_VERSION")));
+                ui.label("Microscopic Multi-Modal Traffic, GTFS Transit & Multi-Hazard Lifeline Workbench");
+                ui.separator();
+                ui.strong("Copyright CRV Science Network");
+                ui.label("License: GNU General Public License v3.0 or later (GPL-3.0-or-later)");
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("Website:");
+                    ui.hyperlink_to("https://crvscience.com", "https://crvscience.com");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Apps Catalog:");
+                    ui.hyperlink_to("https://crvscience.com/apps", "https://crvscience.com/apps");
+                });
+                ui.add_space(6.0);
+                if ui.button("Close").clicked() {
+                    self.about_open = false;
+                }
+            });
+        if !open {
+            self.about_open = false;
+        }
+    }
+
+    fn load_snapshot_from_path(&mut self, path_str: &str) -> bool {
+        match SimulationWorld::load_snapshot_json(Path::new(path_str)) {
+            Ok((mut loaded_world, loaded_plume)) => {
+                if loaded_world.vehicles.is_empty() {
+                    loaded_world.seed_initial_traffic(280);
+                }
+                let b = loaded_world.network.bounds;
+                let span = (b.max_x - b.min_x).max(b.max_y - b.min_y).max(200.0);
+                self.cam_x = 0.5 * (b.min_x + b.max_x);
+                self.cam_y = 0.5 * (b.min_y + b.max_y);
+                self.cam_zoom = (760.0 / span).clamp(0.28, 2.2);
+                self.selected_junction = 0;
+                self.selected_segment = loaded_world.watched_segment_id;
+                self.plume_params = loaded_plume;
+                self.set_io_ok(format!(
+                    "Loaded {} (t={:.1}s, {} agents)",
+                    path_str,
+                    loaded_world.sim_time_s,
+                    loaded_world.total_active_agents()
+                ));
+                self.active_city_name = loaded_world.network.city_label.clone();
+                self.world = loaded_world;
+                self.physics_accum_s = 0.0;
+                self.heatmap_dirty = true;
+                self.plume_reset_pending = true;
+                self.paused = true;
+                true
+            }
+            Err(e) => {
+                self.set_io_err(format!("Snapshot load failed: {e}"));
+                false
+            }
+        }
+    }
+
     pub fn ui_step(&mut self, ctx: &egui::Context) {
         self.poll_background_sweep();
         let dt_real = ctx.input(|i| i.stable_dt as f64).clamp(0.0005, 0.05);
@@ -1800,6 +2044,37 @@ impl UrbanGridGuiApp {
         }
 
         self.render_command_palette(ctx);
+        self.render_about_window(ctx);
+
+        egui::TopBottomPanel::bottom("crv_footer")
+            .exact_height(24.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.small(
+                        egui::RichText::new("Copyright CRV Science Network | GPL-3.0-or-later")
+                            .color(Color32::from_rgb(148, 163, 184)),
+                    );
+                    if !self.io_status_msg.is_empty() {
+                        ui.separator();
+                        let st_col = if self.io_status_is_error {
+                            Color32::from_rgb(248, 113, 113)
+                        } else {
+                            Color32::from_rgb(52, 211, 153)
+                        };
+                        ui.small(egui::RichText::new(&self.io_status_msg).color(st_col));
+                        if ui.small_button("Clear").clicked() {
+                            self.io_status_msg.clear();
+                            self.io_status_is_error = false;
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("About").clicked() {
+                            self.about_open = !self.about_open;
+                        }
+                    });
+                });
+            });
+
         // Zero background simulation or continuous repaint while on MainEntranceHub!
         if self.screen == GuiScreen::MainEntranceHub {
             self.render_main_entrance_hub(ctx);
@@ -1928,10 +2203,10 @@ impl UrbanGridGuiApp {
                         .world
                         .dispatch_emergency_on_segment(Some(self.selected_segment))
                     {
-                        self.io_status_msg = format!(
+                        self.set_io_ok(format!(
                             "Dispatched Emergency Unit #{ev_id} on corridor #{} (EVP Green-Wave active)",
                             self.selected_segment
-                        );
+                        ));
                     }
                 }
 
@@ -2094,54 +2369,76 @@ impl UrbanGridGuiApp {
                         include_ag,
                     ) {
                         Ok(bytes) => {
-                            self.io_status_msg = format!(
+                            self.set_io_ok(format!(
                                 "Saved {} ({:.1} KB)",
                                 self.snapshot_path,
                                 bytes as f64 / 1024.0
-                            );
+                            ));
                         }
                         Err(e) => {
-                            self.io_status_msg = format!("Save failed: {e}");
+                            self.set_io_err(format!("Save failed: {e}"));
+                        }
+                    }
+                }
+                if ui.small_button("Save As...").on_hover_text("Choose snapshot JSON path via native Save dialog").clicked() {
+                    if let Some(picked) = pick_save_path("JSON Snapshots", &["json"], &self.snapshot_path) {
+                        self.snapshot_path = picked;
+                        let include_ag = self.save_include_agents && self.world.total_active_agents() <= 15_000;
+                        match self.world.save_snapshot_json(
+                            Path::new(&self.snapshot_path),
+                            self.plume_params,
+                            "Workbench Scenario Snapshot",
+                            include_ag,
+                        ) {
+                            Ok(bytes) => {
+                                self.set_io_ok(format!(
+                                    "Saved {} ({:.1} KB)",
+                                    self.snapshot_path,
+                                    bytes as f64 / 1024.0
+                                ));
+                            }
+                            Err(e) => {
+                                self.set_io_err(format!("Save failed: {e}"));
+                            }
                         }
                     }
                 }
                 if ui.button("Load .json").on_hover_text("Load scenario snapshot from JSON").clicked() {
-                    match SimulationWorld::load_snapshot_json(Path::new(&self.snapshot_path)) {
-                        Ok((loaded_world, loaded_plume)) => {
-                            let b = loaded_world.network.bounds;
-                            let span = (b.max_x - b.min_x).max(b.max_y - b.min_y).max(200.0);
-                            self.cam_x = 0.5 * (b.min_x + b.max_x);
-                            self.cam_y = 0.5 * (b.min_y + b.max_y);
-                            self.cam_zoom = (760.0 / span).clamp(0.28, 2.2);
-                            self.selected_junction = 0;
-                            self.selected_segment = loaded_world.watched_segment_id;
-                            self.plume_params = loaded_plume;
-                            self.io_status_msg = format!(
-                                "Loaded {} (t={:.1}s, {} agents)",
-                                self.snapshot_path,
-                                loaded_world.sim_time_s,
-                                loaded_world.total_active_agents()
-                            );
-                            self.active_city_name = loaded_world.network.city_label.clone();
-                            self.world = loaded_world;
-                            self.physics_accum_s = 0.0;
-                            self.heatmap_dirty = true;
-                            self.plume_reset_pending = true;
-                            self.paused = true;
-                        }
-                        Err(e) => {
-                            self.io_status_msg = format!("Load failed: {e}");
-                        }
+                    let path_str = self.snapshot_path.clone();
+                    let _ = self.load_snapshot_from_path(&path_str);
+                }
+                if ui.small_button("Open...").on_hover_text("Open scenario snapshot JSON via native Open dialog").clicked() {
+                    if let Some(picked) = pick_open_path("JSON Snapshots", &["json"], &self.snapshot_path) {
+                        self.snapshot_path = picked.clone();
+                        let _ = self.load_snapshot_from_path(&picked);
                     }
                 }
                 if ui.button("Export .csv").on_hover_text("Export 1 Hz time-series telemetry to CSV").clicked() {
                     match self.world.export_telemetry_csv(Path::new(&self.csv_export_path)) {
                         Ok(rows) => {
-                            self.io_status_msg =
-                                format!("Exported {rows} rows -> {}", self.csv_export_path);
+                            self.set_io_ok(format!(
+                                "Exported {rows} rows -> {}",
+                                self.csv_export_path
+                            ));
                         }
                         Err(e) => {
-                            self.io_status_msg = format!("CSV export failed: {e}");
+                            self.set_io_err(format!("CSV export failed: {e}"));
+                        }
+                    }
+                }
+                if ui.small_button("Export As...").on_hover_text("Choose telemetry CSV path via native Save dialog").clicked() {
+                    if let Some(picked) = pick_save_path("CSV Files", &["csv"], &self.csv_export_path) {
+                        self.csv_export_path = picked;
+                        match self.world.export_telemetry_csv(Path::new(&self.csv_export_path)) {
+                            Ok(rows) => {
+                                self.set_io_ok(format!(
+                                    "Exported {rows} rows -> {}",
+                                    self.csv_export_path
+                                ));
+                            }
+                            Err(e) => {
+                                self.set_io_err(format!("CSV export failed: {e}"));
+                            }
                         }
                     }
                 }
@@ -2159,10 +2456,6 @@ impl UrbanGridGuiApp {
                     self.world.mean_speed_mph(),
                     self.world.ledger.hcm_los
                 ));
-                if !self.io_status_msg.is_empty() {
-                    ui.separator();
-                    ui.colored_label(Color32::from_rgb(52, 211, 153), &self.io_status_msg);
-                }
             });
             ui.separator();
             ui.horizontal_wrapped(|ui| {
@@ -2362,14 +2655,14 @@ impl UrbanGridGuiApp {
                         {
                             let rep = self.world.solve_mclp_station_siting(&self.mclp_cfg);
                             let n_applied = self.world.apply_mclp_siting_solution(&rep);
-                            self.io_status_msg = format!(
+                            self.set_io_ok(format!(
                                 "MEXCLP sited {n_applied} stations ({} units, q={:.2}) -> E[Cov]={:.1}%, 2nd-Due={:.1}% ({:.1} ms)",
                                 rep.optimal_total_apparatus,
                                 rep.effective_busy_prob_q,
                                 rep.achieved_expected_cov_pct,
                                 rep.achieved_second_due_cov_pct,
                                 rep.solve_time_ms
-                            );
+                            ));
                             self.latest_mclp_report = Some(rep);
                             self.layer = HeatmapLayer::EmergencyResponse4Min;
                             self.heatmap_dirty = true;
@@ -2388,14 +2681,14 @@ impl UrbanGridGuiApp {
                             .clicked()
                         {
                             let srep = self.world.run_resilience_stress_test(&self.stress_cfg);
-                            self.io_status_msg = format!(
+                            self.set_io_ok(format!(
                                 "Stress-tested {} disruptions ({:.1} ms): worst cov {:.1}% (-{:.1} pts), pass rate {:.0}%",
                                 srep.evaluated_scenarios,
                                 srep.solve_time_ms,
                                 srep.worst_case_parcel_cov_pct,
                                 srep.max_coverage_drop_pct_pts,
                                 srep.resilience_pass_rate_pct
-                            );
+                            ));
                             self.latest_stress_report = Some(srep);
                             self.tab = DockTab::ResilienceStress;
                             self.layer = HeatmapLayer::EmergencyResponse4Min;
@@ -2405,8 +2698,7 @@ impl UrbanGridGuiApp {
                             && ui.button("Reopen All Roads").clicked()
                         {
                             let n_open = self.world.clear_all_road_closures_tracked();
-                            self.io_status_msg =
-                                format!("Reopened {n_open} closed segments (Ctrl+Z to undo)");
+                            self.set_io_ok(format!("Reopened {n_open} closed segments (Ctrl+Z to undo)"));
                             self.heatmap_dirty = true;
                         }
                         ui.label("L-click road: Toggle Closure | R-click: Reopen");
@@ -2438,6 +2730,10 @@ impl UrbanGridGuiApp {
 
                 egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
                     DockTab::SignalsAndRoads => {
+                        egui::CollapsingHeader::new("Selected Junction & Signal Timing")
+                            .id_salt("sig_junc_hdr")
+                            .default_open(true)
+                            .show(ui, |ui| {
                         if let Some(junc) =
                             self.world.network.junctions.get_mut(self.selected_junction)
                         {
@@ -2518,13 +2814,11 @@ impl UrbanGridGuiApp {
                                 }
                             }
                         }
-                        ui.separator();
-                        ui.label(
-                            egui::RichText::new(
-                                "Emergency Vehicle Preemption (EVP) & Siren Yielding:",
-                            )
-                            .strong(),
-                        );
+                            });
+                        egui::CollapsingHeader::new("Emergency Vehicle Preemption (EVP) & Siren Yielding")
+                            .id_salt("sig_evp_hdr")
+                            .default_open(true)
+                            .show(ui, |ui| {
                         if ui
                             .checkbox(
                                 &mut self.world.evp_config.enabled,
@@ -2605,13 +2899,11 @@ impl UrbanGridGuiApp {
                             ecov.hospital_count,
                             ecov.mean_hospital_transport_s
                         ));
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(
-                                "MEXCLP & Second-Due Backup Siting (Daskin 1983 / Hogan-ReVelle 1986):",
-                            )
-                            .strong(),
-                        );
+                            });
+                        egui::CollapsingHeader::new("MEXCLP & Second-Due Backup Siting (Daskin 1983 / Hogan-ReVelle 1986)")
+                            .id_salt("sig_mexclp_hdr")
+                            .default_open(false)
+                            .show(ui, |ui| {
                         egui::ComboBox::from_id_salt("mexclp_obj_cb")
                             .selected_text(self.mclp_cfg.objective_model.label())
                             .show_ui(ui, |ui| {
@@ -2739,7 +3031,7 @@ impl UrbanGridGuiApp {
                         ui.horizontal(|ui| {
                             if ui.button("Preview MEXCLP").clicked() {
                                 let rep = self.world.solve_mclp_station_siting(&self.mclp_cfg);
-                                self.io_status_msg = format!(
+                                self.set_io_ok(format!(
                                     "MEXCLP ({:.1} ms): {} units across {} stations -> E[Cov]={:.1}%, 2nd-Due={:.1}% (q={:.2})",
                                     rep.solve_time_ms,
                                     rep.optimal_total_apparatus,
@@ -2747,7 +3039,7 @@ impl UrbanGridGuiApp {
                                     rep.achieved_expected_cov_pct,
                                     rep.achieved_second_due_cov_pct,
                                     rep.effective_busy_prob_q
-                                );
+                                ));
                                 self.latest_mclp_report = Some(rep);
                                 self.layer = HeatmapLayer::EmergencyResponse4Min;
                                 self.heatmap_dirty = true;
@@ -2762,13 +3054,13 @@ impl UrbanGridGuiApp {
                             {
                                 let rep = self.world.solve_mclp_station_siting(&self.mclp_cfg);
                                 let total_fs = self.world.apply_mclp_siting_solution(&rep);
-                                self.io_status_msg = format!(
+                                self.set_io_ok(format!(
                                     "Applied MEXCLP: {total_fs} stations ({} units, q={:.2}) -> E[Cov]={:.1}%, 2nd-Due={:.1}%",
                                     rep.optimal_total_apparatus,
                                     rep.effective_busy_prob_q,
                                     rep.achieved_expected_cov_pct,
                                     rep.achieved_second_due_cov_pct
-                                );
+                                ));
                                 self.latest_mclp_report = Some(rep);
                                 self.layer = HeatmapLayer::EmergencyResponse4Min;
                                 self.heatmap_dirty = true;
@@ -2884,29 +3176,27 @@ E[Travel]  : {:.1}s | 2nd-Due Backup P90: {:.0}s",
                             ui.horizontal(|ui| {
                                 ui.label("CSV:");
                                 ui.text_edit_singleline(&mut self.mclp_csv_path);
+                                csv_browse_button(ui, &mut self.mclp_csv_path);
                                 if ui.small_button("Export .csv").clicked() {
                                     match mrep.export_csv_path(Path::new(&self.mclp_csv_path)) {
                                         Ok(n_r) => {
-                                            self.io_status_msg = format!(
+                                            self.set_io_ok(format!(
                                                 "Exported {n_r} MEXCLP frontier rows -> {}",
                                                 self.mclp_csv_path
-                                            );
+                                            ));
                                         }
                                         Err(e) => {
-                                            self.io_status_msg = format!("CSV failed: {e}");
+                                            self.set_io_err(format!("CSV failed: {e}"));
                                         }
                                     }
                                 }
                             });
                         }
-
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(
-                                "Larson (1974) Exact 2^N M/M/N Spatial Hypercube Queue:",
-                            )
-                            .strong(),
-                        );
+                            });
+                        egui::CollapsingHeader::new("Larson (1974) Exact 2^N M/M/N Spatial Hypercube Queue")
+                            .id_salt("sig_hypercube_hdr")
+                            .default_open(false)
+                            .show(ui, |ui| {
                         egui::ComboBox::from_id_salt("hc_disc_cb")
                             .selected_text(self.hypercube_cfg.queue_discipline.label())
                             .show_ui(ui, |ui| {
@@ -2957,7 +3247,7 @@ E[Travel]  : {:.1}s | 2nd-Due Backup P90: {:.0}s",
                                     self.mclp_cfg.second_due_threshold_s;
                                 let hrep =
                                     self.world.solve_active_fleet_hypercube(&self.hypercube_cfg);
-                                self.io_status_msg = format!(
+                                self.set_io_ok(format!(
                                     "Hypercube ({} states, {} iters, {:.2} ms): rho {:.1}%..{:.1}%, E[Cov]={:.1}%, x-dist={:.1}%",
                                     hrep.state_space_size,
                                     hrep.gauss_seidel_iterations,
@@ -2966,7 +3256,7 @@ E[Travel]  : {:.1}s | 2nd-Due Backup P90: {:.0}s",
                                     hrep.max_busy_fraction_rho * 100.0,
                                     hrep.expected_primary_cov_pct,
                                     hrep.cross_district_dispatch_pct
-                                );
+                                ));
                                 self.latest_hypercube_report = Some(hrep);
                                 self.heatmap_dirty = true;
                             }
@@ -3053,29 +3343,27 @@ E[Cov]  : {:.1}% | 2nd-Avail={:.1}% | Cross-Dist={:.1}%",
                             ui.horizontal(|ui| {
                                 ui.label("HC CSV:");
                                 ui.text_edit_singleline(&mut self.hypercube_csv_path);
+                                csv_browse_button(ui, &mut self.hypercube_csv_path);
                                 if ui.small_button("Export .csv").clicked() {
                                     match hrep.export_csv_path(Path::new(&self.hypercube_csv_path)) {
                                         Ok(n_r) => {
-                                            self.io_status_msg = format!(
+                                            self.set_io_ok(format!(
                                                 "Exported {n_r} hypercube unit rows -> {}",
                                                 self.hypercube_csv_path
-                                            );
+                                            ));
                                         }
                                         Err(e) => {
-                                            self.io_status_msg = format!("CSV failed: {e}");
+                                            self.set_io_err(format!("CSV failed: {e}"));
                                         }
                                     }
                                 }
                             });
                         }
-
-                        ui.add_space(5.0);
-                        ui.label(
-                            egui::RichText::new(
-                                "Carter, Chaiken & Ignall (1972) / Larson Beat Redistricting:",
-                            )
-                            .strong(),
-                        );
+                            });
+                        egui::CollapsingHeader::new("Carter, Chaiken & Ignall (1972) / Larson Beat Redistricting")
+                            .id_salt("sig_redistrict_hdr")
+                            .default_open(false)
+                            .show(ui, |ui| {
                         egui::ComboBox::from_id_salt("redist_mode_cb")
                             .selected_text(self.redistrict_cfg.objective_mode.label())
                             .show_ui(ui, |ui| {
@@ -3141,7 +3429,7 @@ E[Cov]  : {:.1}% | 2nd-Avail={:.1}% | Cross-Dist={:.1}%",
                                     Some(rrep.optimized_hypercube.clone());
                                 self.layer = HeatmapLayer::ResponseDistricts;
                                 self.heatmap_dirty = true;
-                                self.io_status_msg = format!(
+                                self.set_io_ok(format!(
                                     "Redistricted {} beats ({:.1}% demand, {:.1} ms): Spread {:.1}pt -> {:.1}pt ({:+.0}%), dE[T]={:+.1}s",
                                     shifted,
                                     rrep.reassigned_demand_pct,
@@ -3150,7 +3438,7 @@ E[Cov]  : {:.1}% | 2nd-Avail={:.1}% | Cross-Dist={:.1}%",
                                     rrep.optimized_workload_spread * 100.0,
                                     -rrep.workload_spread_reduction_pct,
                                     rrep.travel_time_delta_s
-                                );
+                                ));
                                 self.latest_redistricting_report = Some(rrep);
                             }
                             if ui
@@ -3160,8 +3448,7 @@ E[Cov]  : {:.1}% | 2nd-Avail={:.1}% | Cross-Dist={:.1}%",
                             {
                                 let cleared = self.world.clear_response_districts_tracked();
                                 self.heatmap_dirty = true;
-                                self.io_status_msg =
-                                    format!("Reset {cleared} parcels to closest-unit Voronoi beats");
+                                self.set_io_ok(format!("Reset {cleared} parcels to closest-unit Voronoi beats"));
                             }
                         });
 
@@ -3279,16 +3566,17 @@ Beats : {}/{} parcels shifted ({:.1}% demand) | {} HC evals",
                             ui.horizontal(|ui| {
                                 ui.label("Beat CSV:");
                                 ui.text_edit_singleline(&mut self.redistrict_csv_path);
+                                csv_browse_button(ui, &mut self.redistrict_csv_path);
                                 if ui.small_button("Units .csv").clicked() {
                                     match rrep.export_csv_path(Path::new(&self.redistrict_csv_path)) {
                                         Ok(n_r) => {
-                                            self.io_status_msg = format!(
+                                            self.set_io_ok(format!(
                                                 "Exported {n_r} redistricted unit rows -> {}",
                                                 self.redistrict_csv_path
-                                            );
+                                            ));
                                         }
                                         Err(e) => {
-                                            self.io_status_msg = format!("CSV failed: {e}");
+                                            self.set_io_err(format!("CSV failed: {e}"));
                                         }
                                     }
                                 }
@@ -3297,26 +3585,23 @@ Beats : {}/{} parcels shifted ({:.1}% demand) | {} HC evals",
                                         &self.redistrict_pareto_csv_path,
                                     )) {
                                         Ok(n_r) => {
-                                            self.io_status_msg = format!(
+                                            self.set_io_ok(format!(
                                                 "Exported {n_r} Pareto tradeoff rows -> {}",
                                                 self.redistrict_pareto_csv_path
-                                            );
+                                            ));
                                         }
                                         Err(e) => {
-                                            self.io_status_msg = format!("CSV failed: {e}");
+                                            self.set_io_err(format!("CSV failed: {e}"));
                                         }
                                     }
                                 }
                             });
                         }
-
-                        ui.add_space(5.0);
-                        ui.label(
-                            egui::RichText::new(
-                                "Diurnal 24-Hr Call & Rush-Hour Peak/Off-Peak Dispatch Tables:",
-                            )
-                            .strong(),
-                        );
+                            });
+                        egui::CollapsingHeader::new("Diurnal 24-Hr Call & Rush-Hour Dispatch Tables")
+                            .id_salt("sig_diurnal_hdr")
+                            .default_open(false)
+                            .show(ui, |ui| {
                         egui::ComboBox::from_id_salt("diurnal_win_cb")
                             .selected_text(self.diurnal_cfg.window_preset.label())
                             .show_ui(ui, |ui| {
@@ -3399,13 +3684,13 @@ Beats : {}/{} parcels shifted ({:.1}% demand) | {} HC evals",
                                 });
                                 self.layer = HeatmapLayer::ResponseDistricts;
                                 self.heatmap_dirty = true;
-                                self.io_status_msg = format!(
+                                self.set_io_ok(format!(
                                     "Built 24h Peak/Off-Peak Tables ({:.1} ms): {} primary / {} 1st+2nd beat switches, 24h E[T] {:.1}s",
                                     drep.solve_time_ms,
                                     sw,
                                     drep.any_rank12_switches_count,
                                     drep.daily_dual_table_mean_travel_s
-                                );
+                                ));
                                 self.latest_diurnal_report = Some(drep);
                             }
                         });
@@ -3427,9 +3712,9 @@ Beats : {}/{} parcels shifted ({:.1}% demand) | {} HC evals",
                                         Some(drep.peak_table.redistricting_report.clone());
                                     self.layer = HeatmapLayer::ResponseDistricts;
                                     self.heatmap_dirty = true;
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "Activated PEAK RUSH Dispatch Table ({upd} parcels switched)"
-                                    );
+                                    ));
                                 }
                                 if ui
                                     .selectable_label(!pk_sel, "Active: OFF-PEAK Table")
@@ -3445,9 +3730,9 @@ Beats : {}/{} parcels shifted ({:.1}% demand) | {} HC evals",
                                         Some(drep.offpeak_table.redistricting_report.clone());
                                     self.layer = HeatmapLayer::ResponseDistricts;
                                     self.heatmap_dirty = true;
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "Activated OFF-PEAK Free-Flow Dispatch Table ({upd} parcels switched)"
-                                    );
+                                    ));
                                 }
                             });
 
@@ -3588,18 +3873,19 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                             ui.horizontal(|ui| {
                                 ui.label("24h CSV:");
                                 ui.text_edit_singleline(&mut self.diurnal_table_csv_path);
+                                csv_browse_button(ui, &mut self.diurnal_table_csv_path);
                                 if ui.small_button("Tables .csv").clicked() {
                                     match drep.export_dispatch_table_csv_path(Path::new(
                                         &self.diurnal_table_csv_path,
                                     )) {
                                         Ok(n_r) => {
-                                            self.io_status_msg = format!(
+                                            self.set_io_ok(format!(
                                                 "Exported {n_r} Peak/Off-Peak run-card rows -> {}",
                                                 self.diurnal_table_csv_path
-                                            );
+                                            ));
                                         }
                                         Err(e) => {
-                                            self.io_status_msg = format!("CSV failed: {e}");
+                                            self.set_io_err(format!("CSV failed: {e}"));
                                         }
                                     }
                                 }
@@ -3608,20 +3894,23 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                         &self.diurnal_hourly_csv_path,
                                     )) {
                                         Ok(n_r) => {
-                                            self.io_status_msg = format!(
+                                            self.set_io_ok(format!(
                                                 "Exported {n_r} diurnal hourly PSA rows -> {}",
                                                 self.diurnal_hourly_csv_path
-                                            );
+                                            ));
                                         }
                                         Err(e) => {
-                                            self.io_status_msg = format!("CSV failed: {e}");
+                                            self.set_io_err(format!("CSV failed: {e}"));
                                         }
                                     }
                                 }
                             });
                         }
-                        ui.separator();
-                        ui.label("Network-Wide Varaiya (2013) Max-Pressure Control:");
+                            });
+                        egui::CollapsingHeader::new("Network-Wide Varaiya (2013) Max-Pressure Control")
+                            .id_salt("sig_mp_hdr")
+                            .default_open(false)
+                            .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             if ui.button("Enable Citywide Max-Pressure").clicked() {
                                 let mut upgraded = 0usize;
@@ -3632,9 +3921,9 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                         upgraded = w.network.enable_network_max_pressure();
                                     },
                                 );
-                                self.io_status_msg = format!(
+                                self.set_io_ok(format!(
                                     "Upgraded {upgraded} junctions to Max-Pressure Adaptive"
-                                );
+                                ));
                             }
                             if ui.button("Revert Fixed-Time").clicked() {
                                 let mut reverted = 0usize;
@@ -3645,9 +3934,9 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                         reverted = w.network.restore_fixed_time_signals();
                                     },
                                 );
-                                self.io_status_msg = format!(
+                                self.set_io_ok(format!(
                                     "Reverted {reverted} junctions to Fixed-Time 2-Phase"
-                                );
+                                ));
                             }
                         });
                         ui.add(
@@ -3687,7 +3976,11 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                 mpt.spillback_gated_movements
                             ));
                         }
-                        ui.separator();
+                            });
+                        egui::CollapsingHeader::new("Selected Corridor & Lane / Roundabout Edits")
+                            .id_salt("sig_corridor_hdr")
+                            .default_open(false)
+                            .show(ui, |ui| {
                         if let Some(seg_ro) = self.world.network.segments.get(self.selected_segment)
                         {
                             let sid = seg_ro.id;
@@ -3734,13 +4027,13 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                     self.symmetric_lane_edit,
                                 ) {
                                     Ok(nl) => {
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Widened corridor #{} to {nl} lanes/dir",
                                             self.selected_segment
-                                        );
+                                        ));
                                         self.heatmap_dirty = true;
                                     }
-                                    Err(e) => self.io_status_msg = format!("Edit error: {e}"),
+                                    Err(e) => self.set_io_err(format!("Edit error: {e}")),
                                 }
                             }
                             if ui.button("-1 Lane (Road Diet)").clicked() {
@@ -3751,13 +4044,13 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                     self.symmetric_lane_edit,
                                 ) {
                                     Ok(nl) => {
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Road diet on corridor #{} -> {nl} lanes/dir",
                                             self.selected_segment
-                                        );
+                                        ));
                                         self.heatmap_dirty = true;
                                     }
-                                    Err(e) => self.io_status_msg = format!("Edit error: {e}"),
+                                    Err(e) => self.set_io_err(format!("Edit error: {e}")),
                                 }
                             }
                         });
@@ -3772,16 +4065,20 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                 self.roundabout_lanes,
                             ) {
                                 Ok(sum) => {
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "Built {}-lane roundabout ({}-arm, R={:.1}m)",
                                         sum.ring_lanes, sum.arms_connected, sum.inscribed_radius_m
-                                    );
+                                    ));
                                     self.heatmap_dirty = true;
                                 }
-                                Err(e) => self.io_status_msg = format!("Roundabout: {e}"),
+                                Err(e) => self.set_io_err(format!("Roundabout: {e}")),
                             }
                         }
-                        ui.separator();
+                            });
+                        egui::CollapsingHeader::new("Command History Stack")
+                            .id_salt("sig_history_hdr")
+                            .default_open(false)
+                            .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(format!(
                                 "History Stack ({} undo / {} redo):",
@@ -3793,7 +4090,7 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                 && ui.small_button("Clear").clicked()
                             {
                                 self.world.edit_history.clear();
-                                self.io_status_msg = "Cleared command history stack.".to_string();
+                                self.set_io_ok("Cleared command history stack.");
                             }
                         });
                         for rec in self.world.edit_history.undo_entries().iter().rev().take(6) {
@@ -3814,6 +4111,7 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                 ),
                             );
                         }
+                            });
                     }
                     DockTab::ZoningAndTransit => {
                         ui.label("Click any city parcel block on map to paint selected zone:");
@@ -3834,8 +4132,7 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                             .clicked()
                         {
                             self.world.apply_tod_upzoning_tracked();
-                            self.io_status_msg =
-                                "Applied 15-Min TOD Upzoning + BRT (Ctrl+Z to undo)".to_string();
+                            self.set_io_ok("Applied 15-Min TOD Upzoning + BRT (Ctrl+Z to undo)");
                             self.heatmap_dirty = true;
                         }
                         ui.separator();
@@ -4033,6 +4330,19 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                         ui.horizontal(|ui| {
                             ui.label("JSON:");
                             ui.text_edit_singleline(&mut self.snapshot_path);
+                            if ui
+                                .small_button("Browse...")
+                                .on_hover_text("Choose snapshot JSON path via native Save dialog")
+                                .clicked()
+                            {
+                                if let Some(picked) = pick_save_path(
+                                    "JSON Snapshots",
+                                    &["json"],
+                                    &self.snapshot_path,
+                                ) {
+                                    self.snapshot_path = picked;
+                                }
+                            }
                         });
                         ui.checkbox(
                             &mut self.save_include_agents,
@@ -4041,10 +4351,11 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                         ui.horizontal(|ui| {
                             ui.label("CSV: ");
                             ui.text_edit_singleline(&mut self.csv_export_path);
+                            csv_browse_button(ui, &mut self.csv_export_path);
                         });
                         if ui.button("Clear Buffered CSV Rows").clicked() {
                             self.world.telemetry_log.clear();
-                            self.io_status_msg = "Cleared CSV telemetry buffer.".to_string();
+                            self.set_io_ok("Cleared CSV telemetry buffer.");
                         }
                         ui.separator();
                         ui.label("Space-Time (x-t) Corridor Shockwave Plot:");
@@ -4235,10 +4546,10 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                         }
                                     }
                                     self.heatmap_dirty = true;
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "Applied `{}` onto live map (Ctrl+Z to undo).",
                                         win.regime_title
-                                    );
+                                    ));
                                 }
                             }
 
@@ -4306,7 +4617,7 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                     ui.strong("Mph");
                                     ui.strong("AvgQ");
                                     ui.strong("CO2");
-                                    ui.strong("ΔSpd");
+                                    ui.strong("dSpd");
                                     ui.end_row();
 
                                     for row in rep
@@ -4352,17 +4663,18 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                             ui.horizontal(|ui| {
                                 ui.label("CSV:");
                                 ui.text_edit_singleline(&mut self.sweep_csv_path);
+                                csv_browse_button(ui, &mut self.sweep_csv_path);
                             });
                             if ui.button("Export Scorecard .csv").clicked() {
                                 match rep.export_csv_path(Path::new(&self.sweep_csv_path)) {
                                     Ok(n_rows) => {
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Exported {n_rows} scorecard rows -> {}",
                                             self.sweep_csv_path
-                                        );
+                                        ));
                                     }
                                     Err(e) => {
-                                        self.io_status_msg = format!("CSV export failed: {e}");
+                                        self.set_io_err(format!("CSV export failed: {e}"));
                                     }
                                 }
                             }
@@ -4502,13 +4814,13 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                 .clicked()
                             {
                                 let srep = self.world.run_resilience_stress_test(&self.stress_cfg);
-                                self.io_status_msg = format!(
+                                self.set_io_ok(format!(
                                     "Evaluated {} closures in {:.1} ms -> worst {:.1}% cov (-{:.1} pts)",
                                     srep.evaluated_scenarios,
                                     srep.solve_time_ms,
                                     srep.worst_case_parcel_cov_pct,
                                     srep.max_coverage_drop_pct_pts
-                                );
+                                ));
                                 self.latest_stress_report = Some(srep);
                                 self.layer = HeatmapLayer::EmergencyResponse4Min;
                                 self.heatmap_dirty = true;
@@ -4533,11 +4845,11 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                 let total_fs = self.world.apply_mclp_siting_solution(&hardened);
                                 let post_stress =
                                     self.world.run_resilience_stress_test(&self.stress_cfg);
-                                self.io_status_msg = format!(
+                                self.set_io_ok(format!(
                                     "Hardened MCLP ({total_fs} stations): worst-case post-closure cov {:.1}% | pass rate {:.0}%",
                                     post_stress.worst_case_parcel_cov_pct,
                                     post_stress.resilience_pass_rate_pct
-                                );
+                                ));
                                 self.latest_mclp_report = Some(hardened);
                                 self.latest_stress_report = Some(post_stress);
                                 self.layer = HeatmapLayer::EmergencyResponse4Min;
@@ -4710,11 +5022,11 @@ Click name to pan camera",
                                             self.cam_y = v.midpoint.y;
                                             self.layer = HeatmapLayer::EmergencyResponse4Min;
                                             self.heatmap_dirty = true;
-                                            self.io_status_msg = format!(
+                                            self.set_io_ok(format!(
                                                 "Injected closure ({n_c} segs): {} -> live <=4m cov {:.1}%",
                                                 v.label,
                                                 self.world.emergency_coverage.parcels_within_4min_pct
-                                            );
+                                            ));
                                         }
                                         ui.end_row();
                                     }
@@ -4724,17 +5036,18 @@ Click name to pan camera",
                             ui.horizontal(|ui| {
                                 ui.label("CSV:");
                                 ui.text_edit_singleline(&mut self.stress_csv_path);
+                                csv_browse_button(ui, &mut self.stress_csv_path);
                             });
                             if ui.button("Export Stress Scorecard .csv").clicked() {
                                 match srep.export_csv_path(Path::new(&self.stress_csv_path)) {
                                     Ok(n_rows) => {
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Exported {n_rows} vulnerability rows -> {}",
                                             self.stress_csv_path
-                                        );
+                                        ));
                                     }
                                     Err(e) => {
-                                        self.io_status_msg = format!("CSV export failed: {e}");
+                                        self.set_io_err(format!("CSV export failed: {e}"));
                                     }
                                 }
                             }
@@ -5176,14 +5489,14 @@ Click name to pan camera",
                                 {
                                     let mcrep = self.world.run_seismic_monte_carlo(&self.seismic_cfg);
                                     self.fragility_plot_arch = mcrep.reference_archetype;
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "Simulated {} seismic trials ({:.1} ms): E[cov]={:.1}%, P10={:.1}%, E[closed]={:.1} bridges",
                                         mcrep.config.monte_carlo_trials,
                                         mcrep.solve_time_ms,
                                         mcrep.mean_parcel_cov_pct,
                                         mcrep.p10_parcel_cov_pct,
                                         mcrep.expected_closed_bridges
-                                    );
+                                    ));
                                     self.latest_seismic_report = Some(mcrep);
                                     self.layer = HeatmapLayer::EmergencyResponse4Min;
                                     self.heatmap_dirty = true;
@@ -5204,11 +5517,11 @@ Click name to pan camera",
                                         .solve_disruption_hardened_mclp(&r_mclp, &self.stress_cfg);
                                     let n_fs = self.world.apply_mclp_siting_solution(&hardened);
                                     let mcrep = self.world.run_seismic_monte_carlo(&self.seismic_cfg);
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "Hardened MCLP ({n_fs} stations): seismic P10 cov {:.1}% | >=90% surv {:.1}%",
                                         mcrep.p10_parcel_cov_pct,
                                         mcrep.prob_meeting_nfpa_target_pct
-                                    );
+                                    ));
                                     self.latest_mclp_report = Some(hardened);
                                     self.latest_seismic_report = Some(mcrep);
                                     self.layer = HeatmapLayer::EmergencyResponse4Min;
@@ -5441,11 +5754,11 @@ Closed: E[B]={:.2} (P90={} br) | P(Cov>={:.0}%) = {:.1}%",
                                             let n_c = self.world.inject_recovery_epoch_tracked(ep);
                                             self.layer = HeatmapLayer::EmergencyResponse4Min;
                                             self.heatmap_dirty = true;
-                                            self.io_status_msg = format!(
+                                            self.set_io_ok(format!(
                                                 "Injected {} P10 state ({n_c} closed segs) -> live <=4m cov {:.1}%",
                                                 ep.label,
                                                 self.world.emergency_coverage.parcels_within_4min_pct
-                                            );
+                                            ));
                                         }
                                     });
 
@@ -5507,10 +5820,10 @@ Closed: E[B]={:.2} (P90={} br) | P(Cov>={:.0}%) = {:.1}%",
                                         );
                                         self.layer = HeatmapLayer::EmergencyResponse4Min;
                                         self.heatmap_dirty = true;
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Injected P10 quake ({n_c} closed segs) -> live <=4m cov {:.1}%",
                                             self.world.emergency_coverage.parcels_within_4min_pct
-                                        );
+                                        ));
                                     }
                                     if ui
                                         .small_button("Inject Worst Realization")
@@ -5526,10 +5839,10 @@ Closed: E[B]={:.2} (P90={} br) | P(Cov>={:.0}%) = {:.1}%",
                                         );
                                         self.layer = HeatmapLayer::EmergencyResponse4Min;
                                         self.heatmap_dirty = true;
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Injected worst quake ({n_c} closed segs) -> live <=4m cov {:.1}%",
                                             self.world.emergency_coverage.parcels_within_4min_pct
-                                        );
+                                        ));
                                     }
                                     if self.world.closed_segment_count() > 0
                                         && ui.small_button("Reopen All").clicked()
@@ -5602,23 +5915,25 @@ Closed: E[B]={:.2} (P90={} br) | P(Cov>={:.0}%) = {:.1}%",
                                 ui.horizontal(|ui| {
                                     ui.label("CSV:");
                                     ui.text_edit_singleline(&mut self.seismic_csv_path);
+                                    csv_browse_button(ui, &mut self.seismic_csv_path);
                                 });
                                 if ui.button("Export Bridge Fragility .csv").clicked() {
                                     match mcrep.export_csv_path(Path::new(&self.seismic_csv_path)) {
                                         Ok(n_rows) => {
-                                            self.io_status_msg = format!(
+                                            self.set_io_ok(format!(
                                                 "Exported {n_rows} bridge fragility rows -> {}",
                                                 self.seismic_csv_path
-                                            );
+                                            ));
                                         }
                                         Err(e) => {
-                                            self.io_status_msg = format!("CSV export failed: {e}");
+                                            self.set_io_err(format!("CSV export failed: {e}"));
                                         }
                                     }
                                 }
                                 ui.horizontal(|ui| {
                                     ui.label("Rec CSV:");
                                     ui.text_edit_singleline(&mut self.recovery_csv_path);
+                                    csv_browse_button(ui, &mut self.recovery_csv_path);
                                 });
                                 ui.monospace(format!(
                                     "Pipes ({:.1}km, PGV {:.0}cm/s): W-Brk={:.2} W-Lk={:.2} | S-Brk={:.2}
@@ -5635,30 +5950,31 @@ R90 Lifelines: Elec {:.1}% | Water>=20psi {:.1}% | Sewer {:.1}%",
                                 if ui.button("Export 90-Day Recovery Curve .csv").clicked() {
                                     match mcrep.export_recovery_csv_path(Path::new(&self.recovery_csv_path)) {
                                         Ok(n_rows) => {
-                                            self.io_status_msg = format!(
+                                            self.set_io_ok(format!(
                                                 "Exported {n_rows} Hazus recovery epochs -> {}",
                                                 self.recovery_csv_path
-                                            );
+                                            ));
                                         }
                                         Err(e) => {
-                                            self.io_status_msg = format!("Recovery CSV failed: {e}");
+                                            self.set_io_err(format!("Recovery CSV failed: {e}"));
                                         }
                                     }
                                 }
                                 ui.horizontal(|ui| {
                                     ui.label("Pipe CSV:");
                                     ui.text_edit_singleline(&mut self.pipeline_csv_path);
+                                    csv_browse_button(ui, &mut self.pipeline_csv_path);
                                 });
                                 if ui.button("Export ALA Buried Pipeline Fragility .csv").clicked() {
                                     match mcrep.export_pipeline_csv_path(Path::new(&self.pipeline_csv_path)) {
                                         Ok(n_rows) => {
-                                            self.io_status_msg = format!(
+                                            self.set_io_ok(format!(
                                                 "Exported {n_rows} buried pipeline fragility rows -> {}",
                                                 self.pipeline_csv_path
-                                            );
+                                            ));
                                         }
                                         Err(e) => {
-                                            self.io_status_msg = format!("Pipeline CSV failed: {e}");
+                                            self.set_io_err(format!("Pipeline CSV failed: {e}"));
                                         }
                                     }
                                 }
@@ -5759,14 +6075,14 @@ R90 Lifelines: Elec {:.1}% | Water>=20psi {:.1}% | Sewer {:.1}%",
                                 let frep = self.world.run_ffe_monte_carlo(&self.ffe_cfg);
                                 self.layer = HeatmapLayer::FireFollowingQuake;
                                 self.heatmap_dirty = true;
-                                self.io_status_msg = format!(
+                                self.set_io_ok(format!(
                                     "FFE MC ({:.1} ms): E[Ign]={:.2}, DryHyd={:.2}, E[Burn]={:.1} parcels (${:.1}M loss)",
                                     frep.solve_time_ms,
                                     frep.expected_ignitions,
                                     frep.expected_dry_hydrant_failures,
                                     frep.expected_burned_parcels,
                                     frep.expected_fire_loss_musd
-                                );
+                                ));
                                 self.latest_ffe_report = Some(frep);
                             }
 
@@ -5862,16 +6178,17 @@ Sky = Fire-Res CBD",
                                 ui.horizontal(|ui| {
                                     ui.label("FFE CSV:");
                                     ui.text_edit_singleline(&mut self.ffe_csv_path);
+                                    csv_browse_button(ui, &mut self.ffe_csv_path);
                                     if ui.small_button("Export .csv").clicked() {
                                         match frep.export_csv_path(Path::new(&self.ffe_csv_path)) {
                                             Ok(n_r) => {
-                                                self.io_status_msg = format!(
+                                                self.set_io_ok(format!(
                                                     "Exported {n_r} FFE parcel risk rows -> {}",
                                                     self.ffe_csv_path
-                                                );
+                                                ));
                                             }
                                             Err(e) => {
-                                                self.io_status_msg = format!("CSV failed: {e}");
+                                                self.set_io_err(format!("CSV failed: {e}"));
                                             }
                                         }
                                     }
@@ -5968,13 +6285,13 @@ Sky = Fire-Res CBD",
                                     let srep = self.world.run_hospital_surge_monte_carlo(&self.surge_cfg);
                                     self.layer = HeatmapLayer::HospitalTraumaSurge;
                                     self.heatmap_dirty = true;
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "ED Surge MC ({:.1} ms): Red/Burn Treat={:.1}m | GoldenHr={:.1}% | Divert={:.1}%",
                                         srep.solve_time_ms,
                                         srep.mean_red_burn_time_to_treatment_min,
                                         srep.golden_hour_treated_pct,
                                         srep.ambulance_diversion_rate_pct
-                                    );
+                                    ));
                                     self.latest_surge_report = Some(srep);
                                 }
                                 if ui
@@ -6110,16 +6427,17 @@ Sky = Fire-Res CBD",
                                 ui.horizontal(|ui| {
                                     ui.label("Surge CSV:");
                                     ui.text_edit_singleline(&mut self.surge_hosp_csv_path);
+                                    csv_browse_button(ui, &mut self.surge_hosp_csv_path);
                                     if ui.small_button("Export .csv").clicked() {
                                         match srep.export_hospital_csv_path(Path::new(&self.surge_hosp_csv_path)) {
                                             Ok(n_r) => {
-                                                self.io_status_msg = format!(
+                                                self.set_io_ok(format!(
                                                     "Exported {n_r} hospital ED surge rows -> {}",
                                                     self.surge_hosp_csv_path
-                                                );
+                                                ));
                                             }
                                             Err(e) => {
-                                                self.io_status_msg = format!("CSV failed: {e}");
+                                                self.set_io_err(format!("CSV failed: {e}"));
                                             }
                                         }
                                     }
@@ -6218,13 +6536,13 @@ Sky = Fire-Res CBD",
                                     let mrep = self.world.run_aeromedical_medevac_mc(&self.medevac_cfg);
                                     self.layer = HeatmapLayer::AeromedicalMedevac;
                                     self.heatmap_dirty = true;
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "Medevac MC ({:.1} ms): EnvOpen={:.1}% | AirXfer={:.2} | XferTime={:.1}m",
                                         mrep.solve_time_ms,
                                         mrep.system_flight_envelope_open_pct,
                                         mrep.expected_air_secondary_burn_transfers,
                                         mrep.mean_secondary_burn_transfer_min
-                                    );
+                                    ));
                                     self.latest_medevac_report = Some(mrep);
                                 }
                                 if ui
@@ -6376,16 +6694,17 @@ Sky = Fire-Res CBD",
                                 ui.horizontal(|ui| {
                                     ui.label("Pad CSV:");
                                     ui.text_edit_singleline(&mut self.medevac_csv_path);
+                                    csv_browse_button(ui, &mut self.medevac_csv_path);
                                     if ui.small_button("Export .csv").clicked() {
                                         match mrep.export_helipad_csv_path(Path::new(&self.medevac_csv_path)) {
                                             Ok(n_r) => {
-                                                self.io_status_msg = format!(
+                                                self.set_io_ok(format!(
                                                     "Exported {n_r} helipad rows -> {}",
                                                     self.medevac_csv_path
-                                                );
+                                                ));
                                             }
                                             Err(e) => {
-                                                self.io_status_msg = format!("CSV failed: {e}");
+                                                self.set_io_err(format!("CSV failed: {e}"));
                                             }
                                         }
                                     }
@@ -6481,13 +6800,13 @@ Sky = Fire-Res CBD",
                                     let erep = self.world.run_evacuation_contraflow_mc(&self.evac_cfg);
                                     self.layer = HeatmapLayer::EvacuationContraflow;
                                     self.heatmap_dirty = true;
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "Evac MC ({:.1} ms): T90={:.1}m | Overrun={:.1} res | EMS-LZ Access={:.0}%",
                                         erep.solve_time_ms,
                                         erep.t90_clearance_min,
                                         erep.expected_fire_overrun_residents,
                                         erep.ems_lz_corridor_access_preserved_pct
-                                    );
+                                    ));
                                     self.latest_evac_report = Some(erep);
                                 }
                                 if ui
@@ -6558,9 +6877,9 @@ Sky = Fire-Res CBD",
                                     let (rev_n, cl_n) =
                                         self.world.apply_evacuation_contraflow_to_network(&erep);
                                     self.heatmap_dirty = true;
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "Applied live contraflow ({rev_n} outbound arterials boosted, {cl_n} FFE blocks closed — Ctrl+Z to undo)"
-                                    );
+                                    ));
                                 }
 
                                 ui.separator();
@@ -6631,16 +6950,17 @@ Sky = Fire-Res CBD",
                                 ui.horizontal(|ui| {
                                     ui.label("Evac CSV:");
                                     ui.text_edit_singleline(&mut self.evac_csv_path);
+                                    csv_browse_button(ui, &mut self.evac_csv_path);
                                     if ui.small_button("Export .csv").clicked() {
                                         match erep.export_parcel_csv_path(Path::new(&self.evac_csv_path)) {
                                             Ok(n_r) => {
-                                                self.io_status_msg = format!(
+                                                self.set_io_ok(format!(
                                                     "Exported {n_r} staged evacuation rows -> {}",
                                                     self.evac_csv_path
-                                                );
+                                                ));
                                             }
                                             Err(e) => {
-                                                self.io_status_msg = format!("CSV failed: {e}");
+                                                self.set_io_err(format!("CSV failed: {e}"));
                                             }
                                         }
                                     }
@@ -6738,13 +7058,13 @@ Sky = Fire-Res CBD",
                                         self.world.run_emergency_shelters_mc(&self.shelters_cfg);
                                     self.layer = HeatmapLayer::EmergencyShelters;
                                     self.heatmap_dirty = true;
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "Shelters MC ({:.1} ms): CleanAir={:.1}% | InPM2.5={:.1} ug/m3 | Unmet={:.0}",
                                         sh_rep.solve_time_ms,
                                         sh_rep.sheltered_clean_air_pct,
                                         sh_rep.mean_assigned_indoor_pm25_ug_m3,
                                         sh_rep.expected_overcrowded_or_unmet_evacuees
-                                    );
+                                    ));
                                     self.latest_shelters_report = Some(sh_rep);
                                 }
                                 if ui
@@ -6910,16 +7230,17 @@ Sky = Fire-Res CBD",
                                 ui.horizontal(|ui| {
                                     ui.label("Shelter CSV:");
                                     ui.text_edit_singleline(&mut self.shelters_csv_path);
+                                    csv_browse_button(ui, &mut self.shelters_csv_path);
                                     if ui.small_button("Export .csv").clicked() {
                                         match sh_rep.export_shelter_csv_path(Path::new(&self.shelters_csv_path)) {
                                             Ok(n_r) => {
-                                                self.io_status_msg = format!(
+                                                self.set_io_ok(format!(
                                                     "Exported {n_r} shelter habitability rows -> {}",
                                                     self.shelters_csv_path
-                                                );
+                                                ));
                                             }
                                             Err(e) => {
-                                                self.io_status_msg = format!("CSV failed: {e}");
+                                                self.set_io_err(format!("CSV failed: {e}"));
                                             }
                                         }
                                     }
@@ -7019,13 +7340,13 @@ Sky = Fire-Res CBD",
                                         self.world.run_commodity_resupply_mc(&self.resupply_cfg);
                                     self.layer = HeatmapLayer::CommodityResupply;
                                     self.heatmap_dirty = true;
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "Supply VRP ({:.1} ms): Security={:.1}% | CW Sav={:.1}% | Depriv={:.0}",
                                         rrep.solve_time_ms,
                                         rrep.system_supply_security_pct,
                                         rrep.mean_convoy_tour_savings_pct,
                                         rrep.total_deprivation_social_cost
-                                    );
+                                    ));
                                     self.latest_resupply_report = Some(rrep);
                                 }
                                 if ui
@@ -7168,16 +7489,17 @@ Sky = Fire-Res CBD",
                                 ui.horizontal(|ui| {
                                     ui.label("Supply CSV:");
                                     ui.text_edit_singleline(&mut self.resupply_csv_path);
+                                    csv_browse_button(ui, &mut self.resupply_csv_path);
                                     if ui.small_button("Export .csv").clicked() {
                                         match rrep.export_site_csv_path(Path::new(&self.resupply_csv_path)) {
                                             Ok(n_r) => {
-                                                self.io_status_msg = format!(
+                                                self.set_io_ok(format!(
                                                     "Exported {n_r} commodity resupply site rows -> {}",
                                                     self.resupply_csv_path
-                                                );
+                                                ));
                                             }
                                             Err(e) => {
-                                                self.io_status_msg = format!("CSV failed: {e}");
+                                                self.set_io_err(format!("CSV failed: {e}"));
                                             }
                                         }
                                     }
@@ -7282,13 +7604,13 @@ Sky = Fire-Res CBD",
                                         .run_transit_bus_evacuation_mc(&self.transit_evac_cfg);
                                     self.layer = HeatmapLayer::TransitBusEvacuation;
                                     self.heatmap_dirty = true;
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "Bus+EMS Evac ({:.1} ms): Clean-Air={:.1}% | Cycle={:.1}m | Stranded={:.0}",
                                         trep.solve_time_ms,
                                         trep.combined_clean_air_sheltered_pct,
                                         trep.mean_bus_shuttle_cycle_min,
                                         trep.stranded_vulnerable_pax
-                                    );
+                                    ));
                                     self.latest_transit_evac_report = Some(trep);
                                 }
                                 if ui
@@ -7351,9 +7673,9 @@ Sky = Fire-Res CBD",
                                         let (n_b, n_c) =
                                             self.world.apply_bus_ems_contraflow_to_network(&trep);
                                         self.heatmap_dirty = true;
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Committed {n_b} Bus+EMS priority segments & {n_c} contraflow lanes (Ctrl+Z to undo)"
-                                        );
+                                        ));
                                     }
                                 }
                             });
@@ -7450,16 +7772,17 @@ Sky = Fire-Res CBD",
                                 ui.horizontal(|ui| {
                                     ui.label("Depots CSV:");
                                     ui.text_edit_singleline(&mut self.transit_evac_csv_path);
+                                    csv_browse_button(ui, &mut self.transit_evac_csv_path);
                                     if ui.small_button("Export .csv").clicked() {
                                         match trep.export_depot_csv_path(Path::new(&self.transit_evac_csv_path)) {
                                             Ok(n_r) => {
-                                                self.io_status_msg = format!(
+                                                self.set_io_ok(format!(
                                                     "Exported {n_r} GTFS evacuation pickup depot rows -> {}",
                                                     self.transit_evac_csv_path
-                                                );
+                                                ));
                                             }
                                             Err(e) => {
-                                                self.io_status_msg = format!("CSV failed: {e}");
+                                                self.set_io_err(format!("CSV failed: {e}"));
                                             }
                                         }
                                     }
@@ -7575,13 +7898,13 @@ Sky = Fire-Res CBD",
                                         self.world.run_warning_mobilization_mc(&self.warning_cfg);
                                     self.layer = HeatmapLayer::WarningMobilization;
                                     self.heatmap_dirty = true;
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "Warning MC ({:.1} ms): BTS Dark={:.1}% | Receipt={:.1}m | Trapped={:.0}",
                                         wrep.solve_time_ms,
                                         wrep.mean_cell_towers_blackout_pct,
                                         wrep.mean_warning_receipt_min,
                                         wrep.late_departure_fire_trapped_pax
-                                    );
+                                    ));
                                     self.latest_warning_report = Some(wrep);
                                 }
                                 if ui
@@ -7642,9 +7965,9 @@ Sky = Fire-Res CBD",
                                         let n_p =
                                             self.world.apply_warning_staging_to_parcels(&wrep);
                                         self.heatmap_dirty = true;
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Committed adaptive departure stages across {n_p} parcels (Ctrl+Z to undo)"
-                                        );
+                                        ));
                                     }
                                 }
                             });
@@ -7740,16 +8063,17 @@ Sky = Fire-Res CBD",
                                 ui.horizontal(|ui| {
                                     ui.label("BTS CSV:");
                                     ui.text_edit_singleline(&mut self.warning_csv_path);
+                                    csv_browse_button(ui, &mut self.warning_csv_path);
                                     if ui.small_button("Export .csv").clicked() {
                                         match wrep.export_tower_csv_path(Path::new(&self.warning_csv_path)) {
                                             Ok(n_r) => {
-                                                self.io_status_msg = format!(
+                                                self.set_io_ok(format!(
                                                     "Exported {n_r} cellular BTS fragility rows -> {}",
                                                     self.warning_csv_path
-                                                );
+                                                ));
                                             }
                                             Err(e) => {
-                                                self.io_status_msg = format!("CSV failed: {e}");
+                                                self.set_io_err(format!("CSV failed: {e}"));
                                             }
                                         }
                                     }
@@ -7850,13 +8174,13 @@ Sky = Fire-Res CBD",
                                         self.world.run_fema_comms_mc(&self.fema_comms_cfg);
                                     self.layer = HeatmapLayer::FemaCommsArchitecture;
                                     self.heatmap_dirty = true;
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "FEMA IPAWS ({:.1} ms): CAP={:.1}% | Public={:.1}% | ESF-2 LMR={:.1}%",
                                         frep.solve_time_ms,
                                         frep.eoc_cap_origination_uptime_pct,
                                         frep.public_ipaws_verified_reach_pct,
                                         frep.esf2_nifog_responder_lmr_coverage_pct
-                                    );
+                                    ));
                                     self.latest_fema_comms_report = Some(frep);
                                 }
                                 if ui
@@ -7920,9 +8244,9 @@ Sky = Fire-Res CBD",
                                         let n_p =
                                             self.world.apply_fema_mers_posture_tracked(&frep);
                                         self.heatmap_dirty = true;
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Deployed FEMA MERS/IPAWS posture across {n_p} parcels (Ctrl+Z to undo)"
-                                        );
+                                        ));
                                     }
                                 }
                             });
@@ -8018,16 +8342,17 @@ Sky = Fire-Res CBD",
                                 ui.horizontal(|ui| {
                                     ui.label("FEMA CSV:");
                                     ui.text_edit_singleline(&mut self.fema_comms_csv_path);
+                                    csv_browse_button(ui, &mut self.fema_comms_csv_path);
                                     if ui.small_button("Export .csv").clicked() {
                                         match frep.export_asset_csv_path(Path::new(&self.fema_comms_csv_path)) {
                                             Ok(n_r) => {
-                                                self.io_status_msg = format!(
+                                                self.set_io_ok(format!(
                                                     "Exported {n_r} FEMA IPAWS/MERS asset rows -> {}",
                                                     self.fema_comms_csv_path
-                                                );
+                                                ));
                                             }
                                             Err(e) => {
-                                                self.io_status_msg = format!("CSV failed: {e}");
+                                                self.set_io_err(format!("CSV failed: {e}"));
                                             }
                                         }
                                     }
@@ -8128,13 +8453,13 @@ Sky = Fire-Res CBD",
                                         self.world.run_fema_isb_pods_mc(&self.fema_pods_cfg);
                                     self.layer = HeatmapLayer::FemaIsbPods;
                                     self.heatmap_dirty = true;
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "FEMA PODs ({:.1} ms): Served={:.1}% | Wait={:.1}m | Spillback={:.0} vehs",
                                         prep.solve_time_ms,
                                         prep.population_demand_met_pct,
                                         prep.mean_pod_queue_wait_min,
                                         prep.peak_arterial_spillback_vehs
-                                    );
+                                    ));
                                     self.latest_fema_pods_report = Some(prep);
                                 }
                                 if ui
@@ -8199,9 +8524,9 @@ Sky = Fire-Res CBD",
                                         let n_s =
                                             self.world.apply_pod_spillback_to_network(&prep);
                                         self.heatmap_dirty = true;
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Applied POD queue street spillback across {n_s} road segments (Ctrl+Z to undo)"
-                                        );
+                                        ));
                                     }
                                 }
                             });
@@ -8304,16 +8629,17 @@ Sky = Fire-Res CBD",
                                 ui.horizontal(|ui| {
                                     ui.label("PODs CSV:");
                                     ui.text_edit_singleline(&mut self.fema_pods_csv_path);
+                                    csv_browse_button(ui, &mut self.fema_pods_csv_path);
                                     if ui.small_button("Export .csv").clicked() {
                                         match prep.export_pod_csv_path(Path::new(&self.fema_pods_csv_path)) {
                                             Ok(n_r) => {
-                                                self.io_status_msg = format!(
+                                                self.set_io_ok(format!(
                                                     "Exported {n_r} FEMA ISB/C-POD rows -> {}",
                                                     self.fema_pods_csv_path
-                                                );
+                                                ));
                                             }
                                             Err(e) => {
-                                                self.io_status_msg = format!("CSV failed: {e}");
+                                                self.set_io_err(format!("CSV failed: {e}"));
                                             }
                                         }
                                     }
@@ -8403,13 +8729,13 @@ Sky = Fire-Res CBD",
                                         self.world.run_fema_usar_debris_mc(&self.fema_usar_cfg);
                                     self.layer = HeatmapLayer::FemaUsarDebris;
                                     self.heatmap_dirty = true;
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "FEMA US&R ({:.1} ms): Rescued={:.1} ({:.1}%) | PODs Reopen={:.1}h",
                                         urep.solve_time_ms,
                                         urep.expected_live_rescues,
                                         urep.entrapped_survival_rate_pct,
                                         urep.time_to_reopen_all_pods_hrs
-                                    );
+                                    ));
                                     self.latest_fema_usar_report = Some(urep);
                                 }
                                 if ui
@@ -8471,9 +8797,9 @@ Sky = Fire-Res CBD",
                                             .world
                                             .apply_debris_and_reopening_at_hour(&urep, snap_h);
                                         self.heatmap_dirty = true;
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Applied H+{snap_h:.0}h debris state: {n_open} pushed open, {n_blk} still blocked (Ctrl+Z undo)"
-                                        );
+                                        ));
                                     }
                                 }
                             });
@@ -8568,16 +8894,17 @@ Sky = Fire-Res CBD",
                                 ui.horizontal(|ui| {
                                     ui.label("USNG CSV:");
                                     ui.text_edit_singleline(&mut self.fema_usar_csv_path);
+                                    csv_browse_button(ui, &mut self.fema_usar_csv_path);
                                     if ui.small_button("Export .csv").clicked() {
                                         match urep.export_grid_csv_path(Path::new(&self.fema_usar_csv_path)) {
                                             Ok(n_r) => {
-                                                self.io_status_msg = format!(
+                                                self.set_io_ok(format!(
                                                     "Exported {n_r} FEMA USNG collapse search grid rows -> {}",
                                                     self.fema_usar_csv_path
-                                                );
+                                                ));
                                             }
                                             Err(e) => {
-                                                self.io_status_msg = format!("CSV failed: {e}");
+                                                self.set_io_err(format!("CSV failed: {e}"));
                                             }
                                         }
                                     }
@@ -8657,14 +8984,14 @@ Sky = Fire-Res CBD",
                                 {
                                     self.fema_rec_cfg.fema_usar = self.fema_usar_cfg.clone();
                                     let rep = self.world.run_fema_gsb_drc_tdms_mc(&self.fema_rec_cfg);
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "FEMA Recovery ({:.1} ms): 72h Power={:.1}%, TDMS Haul={:.1}% ({:.0} yd3 saved), IA Reg={:.1}%",
                                         rep.solve_time_ms,
                                         rep.energized_lifelines_72h_pct,
                                         rep.curbside_haul_completed_14d_pct,
                                         rep.tdms_landfill_volume_saved_yd3,
                                         rep.ia_registered_14d_pct
-                                    );
+                                    ));
                                     self.latest_fema_rec_report = Some(rep);
                                     self.layer = HeatmapLayer::FemaGsbDrcTdms;
                                     self.heatmap_dirty = true;
@@ -8708,10 +9035,10 @@ Sky = Fire-Res CBD",
                                         let n_up =
                                             self.world.apply_fema_gsb_backup_power_tracked(&rrep);
                                         self.heatmap_dirty = true;
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Energized {:.2} MW USACE 249th GSB prime power ({n_up} parcels updated, Ctrl+Z undo)",
                                             rrep.deployed_prime_power_mw
-                                        );
+                                        ));
                                     }
                                 }
                             });
@@ -8787,16 +9114,17 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                                 ui.horizontal(|ui| {
                                     ui.label("Sites CSV:");
                                     ui.text_edit_singleline(&mut self.fema_rec_csv_path);
+                                    csv_browse_button(ui, &mut self.fema_rec_csv_path);
                                     if ui.small_button("Export .csv").clicked() {
                                         match rrep.export_facility_csv_path(Path::new(&self.fema_rec_csv_path)) {
                                             Ok(n_r) => {
-                                                self.io_status_msg = format!(
+                                                self.set_io_ok(format!(
                                                     "Exported {n_r} FEMA GSB/TDMS/DRC/MRIC rows -> {}",
                                                     self.fema_rec_csv_path
-                                                );
+                                                ));
                                             }
                                             Err(e) => {
-                                                self.io_status_msg = format!("CSV failed: {e}");
+                                                self.set_io_err(format!("CSV failed: {e}"));
                                             }
                                         }
                                     }
@@ -8818,6 +9146,19 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                             ui.horizontal(|ui| {
                                 ui.label("Camera Feed:");
                                 ui.text_edit_singleline(&mut self.wildfire_feed_path);
+                                if ui
+                                    .small_button("Browse...")
+                                    .on_hover_text("Choose ALERTWest camera feed (.json / .geojson / .csv) via native Open dialog")
+                                    .clicked()
+                                {
+                                    if let Some(picked) = pick_open_path(
+                                        "Wildfire Camera Feed",
+                                        &["json", "geojson", "csv"],
+                                        &self.wildfire_feed_path,
+                                    ) {
+                                        self.wildfire_feed_path = picked;
+                                    }
+                                }
                             });
                             ui.horizontal_wrapped(|ui| {
                                 if ui.small_button("Link .json / GeoJSON / .csv").clicked() {
@@ -8828,33 +9169,41 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                                         Ok(cams) => {
                                             let n_c = cams.len();
                                             self.wildfire_cfg.custom_camera_sites = cams;
-                                            self.io_status_msg = format!(
+                                            self.set_io_ok(format!(
                                                 "Linked {n_c} ALERTWest cameras from {}",
                                                 self.wildfire_feed_path
-                                            );
+                                            ));
                                         }
                                         Err(e) => {
-                                            self.io_status_msg = format!("Feed load error: {e}");
+                                            self.set_io_err(format!("Feed load error: {e}"));
                                         }
                                     }
                                 }
                                 if ui.small_button("Write Sample Feed .json").clicked() {
+                                    let mut dir_ok = true;
                                     if let Some(parent) = Path::new(&self.wildfire_feed_path).parent()
                                     {
-                                        let _ = std::fs::create_dir_all(parent);
-                                    }
-                                    match std::fs::write(
-                                        &self.wildfire_feed_path,
-                                        builtin_western_wildfire_camera_feed_json(),
-                                    ) {
-                                        Ok(()) => {
-                                            self.io_status_msg = format!(
-                                                "Wrote sample ALERTWest camera feed -> {}",
-                                                self.wildfire_feed_path
-                                            );
+                                        if !parent.as_os_str().is_empty() {
+                                            if let Err(e) = std::fs::create_dir_all(parent) {
+                                                self.set_io_err(format!("Create dir failed: {e}"));
+                                                dir_ok = false;
+                                            }
                                         }
-                                        Err(e) => {
-                                            self.io_status_msg = format!("Write error: {e}");
+                                    }
+                                    if dir_ok {
+                                        match std::fs::write(
+                                            &self.wildfire_feed_path,
+                                            builtin_western_wildfire_camera_feed_json(),
+                                        ) {
+                                            Ok(()) => {
+                                                self.set_io_ok(format!(
+                                                    "Wrote sample ALERTWest camera feed -> {}",
+                                                    self.wildfire_feed_path
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                self.set_io_err(format!("Write error: {e}"));
+                                            }
                                         }
                                     }
                                 }
@@ -8966,7 +9315,7 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                                     .clicked()
                                 {
                                     let wrep = self.world.run_wildfire_alertwest_mc(&self.wildfire_cfg);
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "Wildfire MC ({:.1} ms): {} cams ({} LOS, CEP90={:.0}m, Det={:.1}m) -> {:.1} ac ({:.0}% cont)",
                                         wrep.solve_time_ms,
                                         wrep.active_camera_count,
@@ -8975,7 +9324,7 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                                         wrep.mean_detection_to_dispatch_min,
                                         wrep.final_burned_area_acres,
                                         wrep.final_containment_pct
-                                    );
+                                    ));
                                     self.latest_wildfire_report = Some(wrep);
                                     self.layer = HeatmapLayer::WildfireAlertWestResponse;
                                     self.heatmap_dirty = true;
@@ -9019,9 +9368,9 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                                             .world
                                             .apply_wui_fuelbreak_and_fire_closures_tracked(&wrep);
                                         self.heatmap_dirty = true;
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Cut {n_fb} WUI fuelbreak parcels & closed {n_cls} fire-impinged roads (Ctrl+Z undo)"
-                                        );
+                                        ));
                                     }
                                 }
                             });
@@ -9114,16 +9463,17 @@ Attack   : {:.1} ac (P90 {:.1}) | Cont={:.0}% | Phos-Chek={:.0} gal | GoEvac={:.
                                 ui.horizontal(|ui| {
                                     ui.label("Cams CSV:");
                                     ui.text_edit_singleline(&mut self.wildfire_csv_path);
+                                    csv_browse_button(ui, &mut self.wildfire_csv_path);
                                     if ui.small_button("Export .csv").clicked() {
                                         match wrep.export_camera_csv_path(Path::new(&self.wildfire_csv_path)) {
                                             Ok(n_r) => {
-                                                self.io_status_msg = format!(
+                                                self.set_io_ok(format!(
                                                     "Exported {n_r} ALERTWest camera rows -> {}",
                                                     self.wildfire_csv_path
-                                                );
+                                                ));
                                             }
                                             Err(e) => {
-                                                self.io_status_msg = format!("CSV failed: {e}");
+                                                self.set_io_err(format!("CSV failed: {e}"));
                                             }
                                         }
                                     }
@@ -9207,7 +9557,7 @@ Attack   : {:.1} ac (P90 {:.1}) | Cont={:.0}% | Phos-Chek={:.0} gal | GoEvac={:.
                                     let drep = self
                                         .world
                                         .run_burn_scar_debris_flow_mc(&self.debris_flow_cfg);
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "USGS Debris-Flow MC ({:.1} ms): CN={:.1} ({:.1}x runoff), I15_P50={:.1} mm/hr, E[Washout]={:.1}/{} culverts",
                                         drep.solve_time_ms,
                                         drep.mean_post_fire_curve_number,
@@ -9215,7 +9565,7 @@ Attack   : {:.1} ac (P90 {:.1}) | Cont={:.0}% | Phos-Chek={:.0} gal | GoEvac={:.
                                         drep.firewide_median_i15_p50_mm_hr,
                                         drep.expected_washed_out_culverts,
                                         drep.evaluated_culverts_count
-                                    );
+                                    ));
                                     self.latest_debris_flow_report = Some(drep);
                                     self.layer = HeatmapLayer::BurnScarDebrisFlow;
                                     self.heatmap_dirty = true;
@@ -9260,10 +9610,10 @@ Attack   : {:.1} ac (P90 {:.1}) | Cont={:.0}% | Phos-Chek={:.0} gal | GoEvac={:.
                                             .world
                                             .apply_culvert_washouts_and_rdii_tracked(&drep);
                                         self.heatmap_dirty = true;
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Injected {n_w} culvert washouts & {n_f} flooded segments + {:.0} mm/hr RDII sewer surcharge (Ctrl+Z undo)",
                                             drep.coupled_rdii_sewer_inflow_mm_hr
-                                        );
+                                        ));
                                     }
                                 }
                             });
@@ -9352,14 +9702,30 @@ FHWA HDS-5 : Washout={:.1} (P90={}) / {} clv | <=4m Cov={:.1}% | RDII={:.0}mm/h"
                                 ui.horizontal(|ui| {
                                     ui.label("Basin CSV:");
                                     ui.text_edit_singleline(&mut self.debris_basin_csv_path);
+                                    csv_browse_button(ui, &mut self.debris_basin_csv_path);
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Culvert CSV:");
+                                    ui.text_edit_singleline(&mut self.debris_culvert_csv_path);
+                                    csv_browse_button(ui, &mut self.debris_culvert_csv_path);
                                     if ui.small_button("Export").clicked() {
-                                        if let Ok(n_b) = drep.export_basin_csv_path(Path::new(&self.debris_basin_csv_path)) {
-                                            let _ = drep.export_culvert_csv_path(Path::new(&self.debris_culvert_csv_path));
-                                            self.io_status_msg = format!(
-                                                "Exported {n_b} USGS basins -> {} (+ culverts -> {})",
-                                                self.debris_basin_csv_path,
-                                                self.debris_culvert_csv_path
-                                            );
+                                        match (
+                                            drep.export_basin_csv_path(Path::new(&self.debris_basin_csv_path)),
+                                            drep.export_culvert_csv_path(Path::new(&self.debris_culvert_csv_path)),
+                                        ) {
+                                            (Ok(n_b), Ok(n_c)) => {
+                                                self.set_io_ok(format!(
+                                                    "Exported {n_b} USGS basins -> {} (+ {n_c} culverts -> {})",
+                                                    self.debris_basin_csv_path,
+                                                    self.debris_culvert_csv_path
+                                                ));
+                                            }
+                                            (Err(e), _) => {
+                                                self.set_io_err(format!("Basin CSV failed: {e}"));
+                                            }
+                                            (_, Err(e)) => {
+                                                self.set_io_err(format!("Culvert CSV failed: {e}"));
+                                            }
                                         }
                                     }
                                 });
@@ -9451,14 +9817,14 @@ FHWA HDS-5 : Washout={:.1} (P90={}) / {} clv | <=4m Cov={:.1}% | RDII={:.0}mm/h"
                                     self.wtp_turb_cfg.debris_flow = self.debris_flow_cfg.clone();
                                     let wrep =
                                         self.world.run_wtp_turbidity_storage_mc(&self.wtp_turb_cfg);
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "WTP Turbidity MC ({:.1} ms): Peak {:.0} NTU, Shutoff={:.1}h, MinStor={:.1}%, P(BWA)={:.1}%",
                                         wrep.solve_time_ms,
                                         wrep.peak_raw_river_ntu,
                                         wrep.intake_shutoff_duration_hrs,
                                         wrep.min_finished_storage_fill_pct,
                                         wrep.boil_water_advisory_prob_pct
-                                    );
+                                    ));
                                     self.latest_wtp_turb_report = Some(wrep);
                                     self.layer = HeatmapLayer::WtpTurbidityStorage;
                                     self.heatmap_dirty = true;
@@ -9504,11 +9870,11 @@ FHWA HDS-5 : Washout={:.1} (P90={}) / {} clv | <=4m Cov={:.1}% | RDII={:.0}mm/h"
                                         let ok_20psi =
                                             self.world.apply_wtp_storage_drawdown_tracked(&wrep);
                                         self.heatmap_dirty = true;
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Injected {:.1}% min tank storage into Hazen-Williams water grid -> {:.1}% junctions >=20 psi (Ctrl+Z undo)",
                                             wrep.min_finished_storage_fill_pct,
                                             ok_20psi
-                                        );
+                                        ));
                                     }
                                 }
                             });
@@ -9596,16 +9962,17 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 ui.horizontal(|ui| {
                                     ui.label("72h CSV:");
                                     ui.text_edit_singleline(&mut self.wtp_turb_csv_path);
+                                    csv_browse_button(ui, &mut self.wtp_turb_csv_path);
                                     if ui.small_button("Export .csv").clicked() {
                                         match wrep.export_timeline_csv_path(Path::new(&self.wtp_turb_csv_path)) {
                                             Ok(n_r) => {
-                                                self.io_status_msg = format!(
+                                                self.set_io_ok(format!(
                                                     "Exported {n_r} hourly WTP turbidity/coagulant/storage rows -> {}",
                                                     self.wtp_turb_csv_path
-                                                );
+                                                ));
                                             }
                                             Err(e) => {
-                                                self.io_status_msg = format!("CSV failed: {e}");
+                                                self.set_io_err(format!("CSV failed: {e}"));
                                             }
                                         }
                                     }
@@ -9773,9 +10140,9 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 .clicked()
                         {
                             let deg = self.world.apply_darkened_signal_fallback_tracked();
-                            self.io_status_msg = format!(
+                            self.set_io_ok(format!(
                                 "Cascaded {deg} unpowered signalized junctions to 4-Way Yield (Ctrl+Z to restore)"
-                            );
+                            ));
                         }
 
                         let urep = &self.world.utility_report;
@@ -9873,6 +10240,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                         ui.horizontal(|ui| {
                             ui.label("CSV:");
                             ui.text_edit_singleline(&mut self.utility_csv_path);
+                            csv_browse_button(ui, &mut self.utility_csv_path);
                             if ui.small_button("Export .csv").clicked() {
                                 match self
                                     .world
@@ -9880,13 +10248,13 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     .export_csv_path(Path::new(&self.utility_csv_path))
                                 {
                                     Ok(n_r) => {
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Exported {n_r} utility junction rows -> {}",
                                             self.utility_csv_path
-                                        );
+                                        ));
                                     }
                                     Err(e) => {
-                                        self.io_status_msg = format!("CSV failed: {e}");
+                                        self.set_io_err(format!("CSV failed: {e}"));
                                     }
                                 }
                             }
@@ -9906,10 +10274,10 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                         if let Some(pid) =
                             self.world.paint_parcel_zone_at(wx, wy, self.active_brush)
                         {
-                            self.io_status_msg = format!(
+                            self.set_io_ok(format!(
                                 "Painted parcel #{pid} -> {}",
                                 self.active_brush.spec().label
-                            );
+                            ));
                             self.heatmap_dirty = true;
                         }
                     }
@@ -9961,10 +10329,10 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             .world
                             .dispatch_emergency_on_segment(Some(self.selected_segment))
                         {
-                            self.io_status_msg = format!(
+                            self.set_io_ok(format!(
                                 "Dispatched Emergency Unit #{ev_id} on corridor #{}",
                                 self.selected_segment
-                            );
+                            ));
                         }
                     }
                 });
@@ -9989,10 +10357,10 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             self.stress_cfg.bidirectional_closure,
                             Some(false),
                         ) {
-                            self.io_status_msg = format!(
+                            self.set_io_ok(format!(
                                 "Reopened `{name}` (#{sid}) -> <=4m cov {:.1}%",
                                 self.world.emergency_coverage.parcels_within_4min_pct
-                            );
+                            ));
                             self.heatmap_dirty = true;
                         }
                     }
@@ -10001,10 +10369,10 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                         let wx = self.cam_x + (pos.x - rect.center().x) as f64 / self.cam_zoom;
                         let wy = self.cam_y + (pos.y - rect.center().y) as f64 / self.cam_zoom;
                         if let Some(rem) = self.world.remove_emergency_facility_near(wx, wy, 34.0) {
-                            self.io_status_msg = format!(
+                            self.set_io_ok(format!(
                                 "Removed {} (4-min coverage now {:.0}%)",
                                 rem.name, self.world.emergency_coverage.parcels_within_4min_pct
-                            );
+                            ));
                             self.heatmap_dirty = true;
                         }
                     }
@@ -10023,8 +10391,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 -1,
                                 self.symmetric_lane_edit,
                             ) {
-                                self.io_status_msg =
-                                    format!("Road diet on segment #{sid} -> {nl} lanes/dir");
+                                self.set_io_ok(format!("Road diet on segment #{sid} -> {nl} lanes/dir"));
                                 self.heatmap_dirty = true;
                             }
                         }
@@ -10049,23 +10416,21 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                             self.selected_segment = first_new;
                                             self.world.watched_segment_id = first_new;
                                         }
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Built new road ({:.0} m, {} ln/dir)",
                                             origin.dist(pt),
                                             self.draw_spec.lanes_per_dir
-                                        );
+                                        ));
                                         self.draw_start_world = None;
                                         self.heatmap_dirty = true;
                                     }
                                     Err(e) => {
-                                        self.io_status_msg = format!("Draw road: {e}");
+                                        self.set_io_err(format!("Draw road: {e}"));
                                     }
                                 }
                             } else {
                                 self.draw_start_world = Some(pt);
-                                self.io_status_msg =
-                                    "Origin anchored — click destination point or existing street to connect."
-                                        .to_string();
+                                self.set_io_ok("Origin anchored — click destination point or existing street to connect.");
                             }
                         }
                         ViewportTool::EditLanes => {
@@ -10080,8 +10445,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     1,
                                     self.symmetric_lane_edit,
                                 ) {
-                                    self.io_status_msg =
-                                        format!("Widened segment #{sid} -> {nl} lanes/dir");
+                                    self.set_io_ok(format!("Widened segment #{sid} -> {nl} lanes/dir"));
                                     self.heatmap_dirty = true;
                                 }
                             }
@@ -10097,14 +10461,14 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     self.roundabout_lanes,
                                 ) {
                                     Ok(sum) => {
-                                        self.io_status_msg = format!(
+                                        self.set_io_ok(format!(
                                             "Converted junction #{jid} -> {}-lane roundabout (R={:.1}m)",
                                             sum.ring_lanes, sum.inscribed_radius_m
-                                        );
+                                        ));
                                         self.heatmap_dirty = true;
                                     }
                                     Err(e) => {
-                                        self.io_status_msg = format!("Roundabout: {e}");
+                                        self.set_io_err(format!("Roundabout: {e}"));
                                     }
                                 }
                             }
@@ -10119,11 +10483,11 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 )
                             {
                                 let state_str = if is_closed { "CLOSED" } else { "REOPENED" };
-                                self.io_status_msg = format!(
+                                self.set_io_ok(format!(
                                     "{state_str} `{name}` (#{sid}) -> NFPA <=4m cov {:.1}% (P90 {:.0}s)",
                                     self.world.emergency_coverage.parcels_within_4min_pct,
                                     self.world.emergency_coverage.p90_fire_travel_s
-                                );
+                                ));
                                 self.layer = HeatmapLayer::EmergencyResponse4Min;
                                 self.heatmap_dirty = true;
                             }
@@ -10134,12 +10498,12 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 wy,
                                 self.active_facility_kind,
                             ) {
-                                self.io_status_msg = format!(
+                                self.set_io_ok(format!(
                                     "Placed {} #{fid} — NFPA 1710 <=4m coverage: {:.0}% (P90 {:.0}s)",
                                     self.active_facility_kind.label(),
                                     self.world.emergency_coverage.parcels_within_4min_pct,
                                     self.world.emergency_coverage.p90_fire_travel_s
-                                );
+                                ));
                                 self.layer = HeatmapLayer::EmergencyResponse4Min;
                                 self.heatmap_dirty = true;
                             }
@@ -10148,10 +10512,10 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             if let Some(pid) =
                                 self.world.paint_parcel_zone_at(wx, wy, self.active_brush)
                             {
-                                self.io_status_msg = format!(
+                                self.set_io_ok(format!(
                                     "Painted parcel #{pid} -> {}",
                                     self.active_brush.spec().label
-                                );
+                                ));
                                 self.heatmap_dirty = true;
                             }
                         }
@@ -10174,10 +10538,10 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 if let Some(pid) =
                                     self.world.paint_parcel_zone_at(wx, wy, self.active_brush)
                                 {
-                                    self.io_status_msg = format!(
+                                    self.set_io_ok(format!(
                                         "Painted parcel #{pid} -> {}",
                                         self.active_brush.spec().label
-                                    );
+                                    ));
                                     self.heatmap_dirty = true;
                                 }
                             }
@@ -10291,6 +10655,59 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                     )
                 };
 
+                let hud_rect = Rect::from_min_size(
+                    Pos2::new(rect.left() + 12.0, rect.top() + 12.0),
+                    EguiVec2::new(430.0, 28.0),
+                );
+                let ems_colorbar_rect = if self.layer == HeatmapLayer::EmergencyResponse4Min {
+                    Some(Rect::from_min_size(
+                        Pos2::new(rect.left() + 12.0, rect.bottom() - 64.0),
+                        EguiVec2::new(274.0, 52.0),
+                    ))
+                } else {
+                    None
+                };
+
+                let mut label_placer = LabelPlacer::new(rect);
+                label_placer.reserve(hud_rect);
+                label_placer.reserve(Rect::from_min_size(
+                    Pos2::new(rect.left() + 10.0, rect.top() + 34.0),
+                    EguiVec2::new((rect.width() - 20.0).min(780.0), 34.0),
+                ));
+                if let Some(cb_rect) = ems_colorbar_rect {
+                    label_placer.reserve(cb_rect);
+                }
+
+                // Priority 1: Crisp facility badges over placed Fire Stations & Trauma Hospitals
+                if self.cam_zoom >= 0.42 {
+                    let fac_bg = Color32::from_rgba_unmultiplied(15, 23, 42, 220);
+                    let fac_offsets = [
+                        EguiVec2::new(0.0, -16.0),
+                        EguiVec2::new(0.0, 16.0),
+                        EguiVec2::new(28.0, 0.0),
+                        EguiVec2::new(-28.0, 0.0),
+                        EguiVec2::new(24.0, -16.0),
+                        EguiVec2::new(-24.0, -16.0),
+                    ];
+                    for fac in &self.world.emergency_facilities {
+                        let f_scr = world_to_screen(fac.world_pos.x, fac.world_pos.y);
+                        let badge_col = match fac.kind {
+                            EmergencyFacilityKind::FireStation => Color32::from_rgb(254, 205, 211),
+                            EmergencyFacilityKind::Hospital => Color32::from_rgb(186, 230, 253),
+                        };
+                        label_placer.place_badge(
+                            &painter,
+                            f_scr,
+                            &format!("{}{}", fac.kind.short_prefix(), fac.id + 1),
+                            egui::FontId::monospace(11.0),
+                            badge_col,
+                            fac_bg,
+                            &fac_offsets,
+                            true,
+                        );
+                    }
+                }
+
                 // Seismic bridge fragility failure-probability halos when Seismic Monte Carlo mode is active
                 if self.tab == DockTab::ResilienceStress
                     && self.stress_sub_mode == StressSubMode::SeismicMonteCarlo
@@ -10309,12 +10726,20 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             painter.line_segment([p0_s, p1_s], Stroke::new(3.4, col));
                             if self.cam_zoom >= 0.30 {
                                 let m_scr = world_to_screen(b.midpoint.x, b.midpoint.y);
-                                painter.text(
-                                    Pos2::new(m_scr.x, m_scr.y - 8.0),
-                                    egui::Align2::CENTER_BOTTOM,
-                                    format!("P(Cls)={:.0}%", b.mc_closure_rate_pct),
+                                label_placer.place_badge(
+                                    &painter,
+                                    m_scr,
+                                    &format!("P(Cls)={:.0}%", b.mc_closure_rate_pct),
                                     egui::FontId::monospace(10.5),
                                     col,
+                                    Color32::from_rgba_unmultiplied(15, 23, 42, 205),
+                                    &[
+                                        EguiVec2::new(0.0, -16.0),
+                                        EguiVec2::new(0.0, 16.0),
+                                        EguiVec2::new(34.0, 0.0),
+                                        EguiVec2::new(-34.0, 0.0),
+                                    ],
+                                    true,
                                 );
                             }
                         }
@@ -10346,12 +10771,20 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             }
                             if self.cam_zoom >= 0.30 {
                                 let m_scr = world_to_screen(v.midpoint.x, v.midpoint.y);
-                                painter.text(
-                                    Pos2::new(m_scr.x, m_scr.y - 8.0),
-                                    egui::Align2::CENTER_BOTTOM,
-                                    format!("CRIT#{} (-{:.0}pt)", v.rank, v.coverage_drop_pct_pts),
+                                label_placer.place_badge(
+                                    &painter,
+                                    m_scr,
+                                    &format!("CRIT#{} (-{:.0}pt)", v.rank, v.coverage_drop_pct_pts),
                                     egui::FontId::monospace(10.5),
                                     Color32::from_rgb(253, 164, 175),
+                                    Color32::from_rgba_unmultiplied(15, 23, 42, 210),
+                                    &[
+                                        EguiVec2::new(0.0, -16.0),
+                                        EguiVec2::new(0.0, 16.0),
+                                        EguiVec2::new(38.0, 0.0),
+                                        EguiVec2::new(-38.0, 0.0),
+                                    ],
+                                    true,
                                 );
                             }
                         }
@@ -10392,12 +10825,23 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             } else {
                                 format!("MEXCLP#{}", idx + 1)
                             };
-                            painter.text(
-                                Pos2::new(s_scr.x, s_scr.y + (7.0 * self.cam_zoom as f32).max(9.0)),
-                                egui::Align2::CENTER_TOP,
-                                tag,
+                            let y_off = (14.0 * self.cam_zoom as f32).max(17.0);
+                            label_placer.place_badge(
+                                &painter,
+                                s_scr,
+                                &tag,
                                 egui::FontId::monospace(10.5),
                                 Color32::from_rgb(254, 240, 138),
+                                Color32::from_rgba_unmultiplied(15, 23, 42, 215),
+                                &[
+                                    EguiVec2::new(0.0, y_off),
+                                    EguiVec2::new(0.0, -y_off),
+                                    EguiVec2::new(46.0, 0.0),
+                                    EguiVec2::new(-46.0, 0.0),
+                                    EguiVec2::new(36.0, y_off),
+                                    EguiVec2::new(-36.0, y_off),
+                                ],
+                                true,
                             );
                         }
                     }
@@ -10459,19 +10903,25 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             }
                             for us in &rrep.unit_summaries {
                                 let u_scr = world_to_screen(us.world_pos.x, us.world_pos.y);
-                                painter.text(
-                                    Pos2::new(
-                                        u_scr.x,
-                                        u_scr.y + (16.0 * self.cam_zoom as f32).max(18.0),
-                                    ),
-                                    egui::Align2::CENTER_TOP,
-                                    format!(
+                                let y_off = (22.0 * self.cam_zoom as f32).max(26.0);
+                                label_placer.place_badge(
+                                    &painter,
+                                    u_scr,
+                                    &format!(
                                         "s={:+.1}s | rho={:.1}%",
                                         us.boundary_offset_s,
                                         us.optimized_busy_rho * 100.0
                                     ),
                                     egui::FontId::monospace(9.8),
                                     Color32::from_rgb(254, 249, 195),
+                                    Color32::from_rgba_unmultiplied(15, 23, 42, 205),
+                                    &[
+                                        EguiVec2::new(0.0, y_off),
+                                        EguiVec2::new(0.0, -y_off),
+                                        EguiVec2::new(56.0, 0.0),
+                                        EguiVec2::new(-56.0, 0.0),
+                                    ],
+                                    true,
                                 );
                             }
                         }
@@ -11425,16 +11875,6 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     [p0, p1],
                                     Stroke::new(2.8, Color32::from_rgb(56, 189, 248)),
                                 );
-                                if self.cam_zoom >= 0.42 {
-                                    let mid = Pos2::new(0.5 * (p0.x + p1.x), 0.5 * (p0.y + p1.y));
-                                    painter.text(
-                                        mid,
-                                        egui::Align2::CENTER_CENTER,
-                                        format!("+{}CF", cr.contraflow_added_lanes),
-                                        egui::FontId::monospace(8.8),
-                                        Color32::from_rgb(254, 240, 138),
-                                    );
-                                }
                             } else if cr.protected_ems_lz_corridor && cr.remaining_inbound_lanes >= 1 {
                                 painter.line_segment(
                                     [p0, p1],
@@ -11446,7 +11886,45 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             }
                         }
 
+                        if self.cam_zoom >= 0.42 {
+                            let cf_bg = Color32::from_rgba_unmultiplied(15, 23, 42, 205);
+                            let cf_offsets = [
+                                EguiVec2::ZERO,
+                                EguiVec2::new(0.0, -14.0),
+                                EguiVec2::new(0.0, 14.0),
+                                EguiVec2::new(26.0, 0.0),
+                                EguiVec2::new(-26.0, 0.0),
+                                EguiVec2::new(20.0, -14.0),
+                                EguiVec2::new(-20.0, -14.0),
+                            ];
+                            for cr in &erep.corridor_rows {
+                                if cr.thermal_closure_prob_pct < 35.0 && cr.contraflow_added_lanes > 0 {
+                                    let p0 = world_to_screen(cr.from_pos.x, cr.from_pos.y);
+                                    let p1 = world_to_screen(cr.to_pos.x, cr.to_pos.y);
+                                    let mid = Pos2::new(0.5 * (p0.x + p1.x), 0.5 * (p0.y + p1.y));
+                                    label_placer.place_badge(
+                                        &painter,
+                                        mid,
+                                        &format!("+{}CF", cr.contraflow_added_lanes),
+                                        egui::FontId::monospace(8.8),
+                                        Color32::from_rgb(254, 240, 138),
+                                        cf_bg,
+                                        &cf_offsets,
+                                        false,
+                                    );
+                                }
+                            }
+                        }
+
                         if self.cam_zoom >= 0.40 {
+                            let st_bg = Color32::from_rgba_unmultiplied(15, 23, 42, 185);
+                            let st_offsets = [
+                                EguiVec2::ZERO,
+                                EguiVec2::new(0.0, -12.0),
+                                EguiVec2::new(0.0, 12.0),
+                                EguiVec2::new(18.0, 0.0),
+                                EguiVec2::new(-18.0, 0.0),
+                            ];
                             for pr in &erep.parcel_rows {
                                 let p_scr = world_to_screen(pr.center.x, pr.center.y);
                                 let st_col = match pr.evac_stage {
@@ -11454,12 +11932,15 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     2 => Color32::from_rgb(250, 204, 21),
                                     _ => Color32::from_rgb(103, 232, 249),
                                 };
-                                painter.text(
+                                label_placer.place_badge(
+                                    &painter,
                                     p_scr,
-                                    egui::Align2::CENTER_CENTER,
-                                    format!("S{}", pr.evac_stage),
+                                    &format!("S{}", pr.evac_stage),
                                     egui::FontId::monospace(9.0),
                                     st_col,
+                                    st_bg,
+                                    &st_offsets,
+                                    false,
                                 );
                             }
                         }
@@ -11706,23 +12187,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                     }
                 }
 
-                // Crisp facility badges over placed Fire Stations & Trauma Hospitals
-                if self.cam_zoom >= 0.42 {
-                    for fac in &self.world.emergency_facilities {
-                        let f_scr = world_to_screen(fac.world_pos.x, fac.world_pos.y);
-                        let badge_col = match fac.kind {
-                            EmergencyFacilityKind::FireStation => Color32::from_rgb(254, 205, 211),
-                            EmergencyFacilityKind::Hospital => Color32::from_rgb(186, 230, 253),
-                        };
-                        painter.text(
-                            Pos2::new(f_scr.x, f_scr.y - (5.5 * self.cam_zoom as f32).max(8.0)),
-                            egui::Align2::CENTER_BOTTOM,
-                            format!("{}{}", fac.kind.short_prefix(), fac.id + 1),
-                            egui::FontId::monospace(11.0),
-                            badge_col,
-                        );
-                    }
-                }
+
 
                 // Highlight selected junction ring
                 if let Some(sel_j) = self.world.network.junctions.get(self.selected_junction) {
@@ -11881,11 +12346,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                     }
                 }
 
-                // Crisp HUD overlay pill in top-left of viewport
-                let hud_rect = Rect::from_min_size(
-                    Pos2::new(rect.left() + 12.0, rect.top() + 12.0),
-                    EguiVec2::new(430.0, 28.0),
-                );
+                // Crisp HUD overlay pill in top-left of viewport (reserved in `label_placer`)
                 painter.rect_filled(
                     hud_rect,
                     6.0,
@@ -11929,6 +12390,73 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             evac_label,
                             egui::FontId::monospace(11.0),
                             Color32::from_rgb(167, 243, 208),
+                        );
+                    }
+                }
+                if let Some(cb_rect) = ems_colorbar_rect {
+                    painter.rect_filled(
+                        cb_rect,
+                        6.0,
+                        Color32::from_rgba_unmultiplied(15, 23, 42, 228),
+                    );
+                    painter.rect_stroke(
+                        cb_rect,
+                        6.0,
+                        Stroke::new(1.0, Color32::from_rgb(51, 65, 85)),
+                    );
+                    painter.text(
+                        Pos2::new(cb_rect.left() + 8.0, cb_rect.top() + 5.0),
+                        egui::Align2::LEFT_TOP,
+                        "EMS Response Time (0..360 s | NFPA 4m=240s)",
+                        egui::FontId::monospace(9.5),
+                        Color32::from_rgb(226, 232, 240),
+                    );
+                    let bar_rect = Rect::from_min_size(
+                        Pos2::new(cb_rect.left() + 10.0, cb_rect.top() + 21.0),
+                        EguiVec2::new(cb_rect.width() - 20.0, 11.0),
+                    );
+                    let steps = 48usize;
+                    for si in 0..steps {
+                        let u0 = si as f32 / steps as f32;
+                        let u1 = (si + 1) as f32 / steps as f32;
+                        let sec = 0.5 * (u0 + u1) * 360.0;
+                        let c = ug_core::response_time_4min_colormap(sec);
+                        let seg = Rect::from_min_max(
+                            Pos2::new(bar_rect.left() + u0 * bar_rect.width(), bar_rect.top()),
+                            Pos2::new(bar_rect.left() + u1 * bar_rect.width(), bar_rect.bottom()),
+                        );
+                        painter.rect_filled(seg, 0.0, Color32::from_rgb(c[0], c[1], c[2]));
+                    }
+                    painter.rect_stroke(
+                        bar_rect,
+                        1.0,
+                        Stroke::new(0.8, Color32::from_rgb(100, 116, 139)),
+                    );
+                    let x_240 = bar_rect.left() + (240.0 / 360.0) * bar_rect.width();
+                    painter.line_segment(
+                        [
+                            Pos2::new(x_240, bar_rect.top() - 2.0),
+                            Pos2::new(x_240, bar_rect.bottom() + 2.0),
+                        ],
+                        Stroke::new(1.6, Color32::from_rgb(236, 254, 255)),
+                    );
+                    for (frac, lbl, align) in [
+                        (0.0f32, "0 s", egui::Align2::LEFT_TOP),
+                        (120.0 / 360.0, "120 s", egui::Align2::CENTER_TOP),
+                        (240.0 / 360.0, "240 s", egui::Align2::CENTER_TOP),
+                        (1.0f32, "360 s+", egui::Align2::RIGHT_TOP),
+                    ] {
+                        let tx = bar_rect.left() + frac * bar_rect.width();
+                        painter.text(
+                            Pos2::new(tx, bar_rect.bottom() + 3.0),
+                            align,
+                            lbl,
+                            egui::FontId::monospace(9.0),
+                            if (frac - 240.0 / 360.0).abs() < 0.01 {
+                                Color32::from_rgb(236, 254, 255)
+                            } else {
+                                Color32::from_rgb(203, 213, 225)
+                            },
                         );
                     }
                 }
@@ -11990,52 +12518,18 @@ fn write_rgba_png(
             std::fs::create_dir_all(parent)?;
         }
     }
-    let mut raw = Vec::with_capacity((row_bytes + 1) * height as usize);
-    for row in rgba.chunks_exact(row_bytes) {
-        raw.push(0);
-        raw.extend_from_slice(row);
-    }
-    let (mut s1, mut s2) = (1u32, 0u32);
-    for &b in &raw {
-        s1 = (s1 + b as u32) % 65521;
-        s2 = (s2 + s1) % 65521;
-    }
-    let mut zlib = Vec::with_capacity(raw.len() + (raw.len() / 65535 + 1) * 5 + 6);
-    zlib.extend_from_slice(&[0x78, 0x01]);
-    let n_chunks = raw.len().div_ceil(65535).max(1);
-    for (idx, chunk) in raw.chunks(65535).enumerate() {
-        zlib.push(if idx + 1 == n_chunks { 0x01 } else { 0x00 });
-        let len = chunk.len() as u16;
-        zlib.extend_from_slice(&len.to_le_bytes());
-        zlib.extend_from_slice(&(!len).to_le_bytes());
-        zlib.extend_from_slice(chunk);
-    }
-    zlib.extend_from_slice(&((s2 << 16) | s1).to_be_bytes());
-
-    let push_chunk = |out: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]| {
-        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-        out.extend_from_slice(tag);
-        out.extend_from_slice(data);
-        let mut crc = 0xFFFF_FFFFu32;
-        for &b in tag.iter().chain(data.iter()) {
-            crc ^= b as u32;
-            for _ in 0..8 {
-                crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
-            }
-        }
-        out.extend_from_slice(&(crc ^ 0xFFFF_FFFF).to_be_bytes());
-    };
-    let mut png = Vec::with_capacity(zlib.len() + 64);
-    png.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
-    let mut ihdr = [0u8; 13];
-    ihdr[0..4].copy_from_slice(&width.to_be_bytes());
-    ihdr[4..8].copy_from_slice(&height.to_be_bytes());
-    ihdr[8] = 8;
-    ihdr[9] = 6;
-    push_chunk(&mut png, b"IHDR", &ihdr);
-    push_chunk(&mut png, b"IDAT", &zlib);
-    push_chunk(&mut png, b"IEND", &[]);
-    std::fs::write(path, png)
+    let file = std::fs::File::create(path)?;
+    let writer = std::io::BufWriter::new(file);
+    let mut encoder = png::Encoder::new(writer, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::High);
+    encoder.set_filter(png::Filter::Adaptive);
+    let mut png_writer = encoder.write_header().map_err(std::io::Error::other)?;
+    png_writer
+        .write_image_data(rgba)
+        .map_err(std::io::Error::other)?;
+    Ok(())
 }
 
 pub fn render_headless_screenshot(
@@ -12300,7 +12794,8 @@ pub fn run_gui(world: SimulationWorld, vsync: bool) -> eframe::Result<()> {
             .with_title(
                 "urban-grid v5.2 — FEMA Suite, ALERTWest Wildfire, WTP Turbidity & 50k+ wgpu Workbench",
             )
-            .with_inner_size([1440.0, 880.0]),
+            .with_inner_size([1440.0, 880.0])
+            .with_icon(Arc::new(app_icon_data())),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: egui_wgpu::WgpuConfiguration {
             present_mode,
@@ -12388,5 +12883,102 @@ mod tests {
         }
         assert!(requested_active_repaint);
         assert!(app.world.sim_time_s > 0.0);
+    }
+
+    #[test]
+    fn test_cold_start_seeds_vehicles_even_when_pedestrians_exceed_200() {
+        let osm = parse_osm_xml_str(&builtin_riverfront_bridges_osm()).unwrap();
+        let world = SimulationWorld::new(RoadNetwork::compile(&osm));
+        assert!(
+            world.pedestrians.len() >= 180,
+            "precondition: built-in world seeds >= 180 pedestrians"
+        );
+        assert!(
+            world.vehicles.is_empty(),
+            "precondition: SimulationWorld::new starts with 0 vehicles"
+        );
+
+        let app = UrbanGridGuiApp::new_with_wgpu_state(None, world);
+        assert!(
+            !app.world.vehicles.is_empty(),
+            "cold-start GUI must seed vehicles even when pedestrians + cyclists >= 200"
+        );
+        assert!(!app.world.cyclists.is_empty());
+        assert!(!app.world.pedestrians.is_empty());
+        assert_eq!(app.world.sim_time_s, 0.0);
+    }
+
+    #[test]
+    fn test_write_rgba_png_deflate_compressed_under_1mb_at_1600x1000() {
+        let width = 1600u32;
+        let height = 1000u32;
+        let mut rgba = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let idx = ((y * width + x) * 4) as usize;
+                let is_grid = (x % 64 == 0) || (y % 64 == 0);
+                if is_grid {
+                    rgba[idx..idx + 4].copy_from_slice(&[56, 189, 248, 255]);
+                } else if x > 1200 {
+                    rgba[idx..idx + 4].copy_from_slice(&[15, 23, 42, 255]);
+                } else {
+                    rgba[idx..idx + 4].copy_from_slice(&[8, 12, 21, 255]);
+                }
+            }
+        }
+        let tmp_png = std::env::temp_dir().join("ug_deflate_1600x1000_test.png");
+        write_rgba_png(&tmp_png, width, height, &rgba).expect("write_rgba_png succeeds");
+        let bytes = std::fs::read(&tmp_png).expect("read back temp PNG");
+        let _ = std::fs::remove_file(&tmp_png);
+
+        assert!(
+            bytes.len() < 1_000_000,
+            "DEFLATE PNG must be < 1.0 MB, got {} bytes",
+            bytes.len()
+        );
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+
+        let decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
+        let mut reader = decoder.read_info().expect("valid PNG header");
+        let mut decoded = vec![0u8; reader.output_buffer_size().expect("PNG output buffer size")];
+        let info = reader.next_frame(&mut decoded).expect("decode PNG pixels");
+        assert_eq!(info.width, width);
+        assert_eq!(info.height, height);
+        assert_eq!(decoded, rgba);
+    }
+
+    #[test]
+    fn test_gui_footer_about_modal_and_signals_collapsing_headers_render_cleanly() {
+        let osm = parse_osm_xml_str(&builtin_riverfront_bridges_osm()).unwrap();
+        let world = SimulationWorld::new(RoadNetwork::compile(&osm));
+        let mut app = UrbanGridGuiApp::new_with_wgpu_state(None, world);
+        app.enter_workbench(
+            DockTab::SignalsAndRoads,
+            None,
+            HeatmapLayer::EmergencyResponse4Min,
+            ViewportTool::Inspect,
+        );
+        app.about_open = true;
+        app.set_io_err("Test surfaced error");
+        assert!(app.io_status_is_error);
+
+        let ctx = egui::Context::default();
+        for frame_idx in 0..3 {
+            let out = ctx.run(
+                egui::RawInput {
+                    time: Some(frame_idx as f64 * 0.1),
+                    screen_rect: Some(Rect::from_min_size(
+                        Pos2::ZERO,
+                        EguiVec2::new(1440.0, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |c| {
+                    app.ui_step(c);
+                },
+            );
+            assert!(!out.shapes.is_empty());
+        }
+        assert!(app.about_open);
     }
 }

@@ -414,6 +414,9 @@ impl SimulationWorld {
         if !snap.includes_microscopic_agents {
             world.rebuild_cyclists();
             world.rebuild_pedestrians(default_peds);
+            if world.vehicles.is_empty() {
+                world.seed_initial_traffic(280);
+            }
         }
         world.refresh_urban_metrics();
         let mut telemetry_log = std::mem::take(&mut world.telemetry_log);

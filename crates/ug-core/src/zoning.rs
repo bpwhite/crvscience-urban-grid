@@ -291,6 +291,115 @@ fn dist_to_polygon_edges(p: Vec2, poly: &[Vec2]) -> f64 {
     best
 }
 
+fn orient_2d(a: Vec2, b: Vec2, c: Vec2) -> f64 {
+    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+}
+
+fn on_segment_2d(a: Vec2, b: Vec2, p: Vec2) -> bool {
+    p.x >= a.x.min(b.x) - 1e-9
+        && p.x <= a.x.max(b.x) + 1e-9
+        && p.y >= a.y.min(b.y) - 1e-9
+        && p.y <= a.y.max(b.y) + 1e-9
+}
+
+fn segments_intersect(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> bool {
+    if a.x.max(b.x) < c.x.min(d.x) - 1e-9
+        || c.x.max(d.x) < a.x.min(b.x) - 1e-9
+        || a.y.max(b.y) < c.y.min(d.y) - 1e-9
+        || c.y.max(d.y) < a.y.min(b.y) - 1e-9
+    {
+        return false;
+    }
+    let o1 = orient_2d(a, b, c);
+    let o2 = orient_2d(a, b, d);
+    let o3 = orient_2d(c, d, a);
+    let o4 = orient_2d(c, d, b);
+
+    if (o1 > 1e-9 && o2 < -1e-9 || o1 < -1e-9 && o2 > 1e-9)
+        && (o3 > 1e-9 && o4 < -1e-9 || o3 < -1e-9 && o4 > 1e-9)
+    {
+        return true;
+    }
+    if o1.abs() <= 1e-9 && on_segment_2d(a, b, c) {
+        return true;
+    }
+    if o2.abs() <= 1e-9 && on_segment_2d(a, b, d) {
+        return true;
+    }
+    if o3.abs() <= 1e-9 && on_segment_2d(c, d, a) {
+        return true;
+    }
+    if o4.abs() <= 1e-9 && on_segment_2d(c, d, b) {
+        return true;
+    }
+    false
+}
+
+fn segment_intersects_rect(
+    a: Vec2,
+    b: Vec2,
+    min_x: f64,
+    max_x: f64,
+    min_y: f64,
+    max_y: f64,
+) -> bool {
+    let in_rect = |p: Vec2| p.x >= min_x && p.x <= max_x && p.y >= min_y && p.y <= max_y;
+    if in_rect(a) || in_rect(b) {
+        return true;
+    }
+    let tl = Vec2 { x: min_x, y: min_y };
+    let tr = Vec2 { x: max_x, y: min_y };
+    let br = Vec2 { x: max_x, y: max_y };
+    let bl = Vec2 { x: min_x, y: max_y };
+    segments_intersect(a, b, tl, tr)
+        || segments_intersect(a, b, tr, br)
+        || segments_intersect(a, b, br, bl)
+        || segments_intersect(a, b, bl, tl)
+}
+
+fn point_dist_to_rect(p: Vec2, min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> f64 {
+    let dx = if p.x < min_x {
+        min_x - p.x
+    } else if p.x > max_x {
+        p.x - max_x
+    } else {
+        0.0
+    };
+    let dy = if p.y < min_y {
+        min_y - p.y
+    } else if p.y > max_y {
+        p.y - max_y
+    } else {
+        0.0
+    };
+    dx.hypot(dy)
+}
+
+fn min_dist_segment_to_rect(
+    a: Vec2,
+    b: Vec2,
+    min_x: f64,
+    max_x: f64,
+    min_y: f64,
+    max_y: f64,
+) -> f64 {
+    if segment_intersects_rect(a, b, min_x, max_x, min_y, max_y) {
+        return 0.0;
+    }
+    let tl = Vec2 { x: min_x, y: min_y };
+    let tr = Vec2 { x: max_x, y: min_y };
+    let br = Vec2 { x: max_x, y: max_y };
+    let bl = Vec2 { x: min_x, y: max_y };
+    point_dist_to_rect(a, min_x, max_x, min_y, max_y)
+        .min(point_dist_to_rect(b, min_x, max_x, min_y, max_y))
+        .min(point_dist_to_segment(tl, a, b))
+        .min(point_dist_to_segment(tr, a, b))
+        .min(point_dist_to_segment(br, a, b))
+        .min(point_dist_to_segment(bl, a, b))
+}
+
+const MAX_PARCEL_ROAD_DIST_M: f64 = 115.0;
+
 fn make_parcel_record(pid: usize, cx: f64, cy: f64, pw: f64, ph: f64, zone: ZoneCode) -> Parcel {
     Parcel {
         id: pid,
@@ -367,6 +476,14 @@ fn build_parcels_filtered(bounds: BoundingBox, net_opt: Option<&RoadNetwork>) ->
     let is_harbor = city_lower.contains("harbor");
     let is_canyon = city_lower.contains("canyon");
 
+    let has_open_segs = net_opt
+        .map(|n| {
+            n.segments
+                .iter()
+                .any(|s| !s.closed && !s.base_pts.is_empty())
+        })
+        .unwrap_or(false);
+
     let mut parcels = Vec::with_capacity(rows * cols);
     let mut pid = 0usize;
     for r in 0..rows {
@@ -377,14 +494,73 @@ fn build_parcels_filtered(bounds: BoundingBox, net_opt: Option<&RoadNetwork>) ->
             let pad = 12.0;
             let pw = (cw - pad * 2.0).max(24.0);
             let ph = (ch - pad * 2.0).max(24.0);
+            let hx = 0.5 * pw;
+            let hy = 0.5 * ph;
+            let p_min_x = cx - hx;
+            let p_max_x = cx + hx;
+            let p_min_y = cy - hy;
+            let p_max_y = cy + hy;
 
             let mut near_waterfront = false;
             let mut submerged = false;
             if let Some(net) = net_opt {
+                if !net.segments.is_empty() {
+                    let mut min_road_d = f64::INFINITY;
+                    for seg in &net.segments {
+                        if has_open_segs && seg.closed {
+                            continue;
+                        }
+                        for w in seg.base_pts.windows(2) {
+                            min_road_d = min_road_d.min(point_dist_to_segment(center, w[0], w[1]));
+                        }
+                    }
+                    if min_road_d > MAX_PARCEL_ROAD_DIST_M {
+                        continue;
+                    }
+                }
+
+                let sample_pts = [
+                    center,
+                    Vec2 { x: p_min_x, y: p_min_y },
+                    Vec2 { x: p_max_x, y: p_min_y },
+                    Vec2 { x: p_max_x, y: p_max_y },
+                    Vec2 { x: p_min_x, y: p_max_y },
+                    Vec2 { x: p_min_x, y: cy },
+                    Vec2 { x: p_max_x, y: cy },
+                    Vec2 { x: cx, y: p_min_y },
+                    Vec2 { x: cx, y: p_max_y },
+                ];
+                let rect_edges = [
+                    (sample_pts[1], sample_pts[2]),
+                    (sample_pts[2], sample_pts[3]),
+                    (sample_pts[3], sample_pts[4]),
+                    (sample_pts[4], sample_pts[1]),
+                ];
+
                 for wf in &net.water_features {
-                    if wf.is_polygon {
+                    let is_poly = wf.is_polygon
+                        || (wf.pts.len() >= 4
+                            && wf
+                                .pts
+                                .first()
+                                .zip(wf.pts.last())
+                                .map(|(a, b)| a.dist(*b) < 1.0)
+                                .unwrap_or(false));
+                    if is_poly {
                         let edge_d = dist_to_polygon_edges(center, &wf.pts);
-                        if point_in_polygon(center, &wf.pts) || edge_d < 16.0 {
+                        let any_pt_in = sample_pts.iter().any(|&pt| point_in_polygon(pt, &wf.pts));
+                        let any_vtx_in = wf.pts.iter().any(|v| {
+                            v.x >= p_min_x && v.x <= p_max_x && v.y >= p_min_y && v.y <= p_max_y
+                        });
+                        let any_edge_hit = !wf.pts.is_empty()
+                            && (0..wf.pts.len()).any(|i| {
+                                let pa = wf.pts[i];
+                                let pb = wf.pts[(i + 1) % wf.pts.len()];
+                                rect_edges
+                                    .iter()
+                                    .any(|&(ra, rb)| segments_intersect(pa, pb, ra, rb))
+                            });
+                        if any_pt_in || edge_d < 16.0 || any_vtx_in || any_edge_hit {
                             submerged = true;
                             break;
                         }
@@ -392,16 +568,27 @@ fn build_parcels_filtered(bounds: BoundingBox, net_opt: Option<&RoadNetwork>) ->
                             near_waterfront = true;
                         }
                     } else {
-                        let d = wf
+                        let d_center = wf
                             .pts
                             .windows(2)
                             .map(|w| point_dist_to_segment(center, w[0], w[1]))
                             .fold(f64::INFINITY, f64::min);
-                        if d < wf.half_width_m + 14.0 {
+                        let dist_seg_to_rect = wf
+                            .pts
+                            .windows(2)
+                            .map(|w| {
+                                min_dist_segment_to_rect(
+                                    w[0], w[1], p_min_x, p_max_x, p_min_y, p_max_y,
+                                )
+                            })
+                            .fold(f64::INFINITY, f64::min);
+                        if d_center < wf.half_width_m + 14.0
+                            || dist_seg_to_rect < wf.half_width_m + 2.0
+                        {
                             submerged = true;
                             break;
                         }
-                        if d < wf.half_width_m + 84.0 {
+                        if d_center < wf.half_width_m + 84.0 {
                             near_waterfront = true;
                         }
                     }
@@ -445,7 +632,22 @@ fn build_parcels_filtered(bounds: BoundingBox, net_opt: Option<&RoadNetwork>) ->
         }
     }
     if parcels.is_empty() {
-        parcels.push(make_parcel_record(0, mid_x, mid_y, 60.0, 60.0, ZoneCode::MU4));
+        let fallback_pt = net_opt
+            .and_then(|net| {
+                net.segments
+                    .iter()
+                    .find(|s| (!has_open_segs || !s.closed) && !s.base_pts.is_empty())
+                    .map(|s| s.base_pts[s.base_pts.len() / 2])
+            })
+            .unwrap_or(Vec2 { x: mid_x, y: mid_y });
+        parcels.push(make_parcel_record(
+            0,
+            fallback_pt.x,
+            fallback_pt.y,
+            60.0,
+            60.0,
+            ZoneCode::MU4,
+        ));
     }
     parcels
 }
