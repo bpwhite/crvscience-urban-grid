@@ -533,7 +533,6 @@ pub fn run_fema_usar_debris_monte_carlo(
         code: String,
         center: Vec2,
         access_seg: usize,
-        parcel_indices: Vec<usize>,
         dom_arch: StructuralCollapseArchetype,
     }
 
@@ -577,7 +576,6 @@ pub fn run_fema_usar_debris_monte_carlo(
                 code: format!("10T-EQ-{}{}", 42 + gx * 3, 71 + gy * 3),
                 center: Vec2 { x: cx, y: cy },
                 access_seg: aseg,
-                parcel_indices: p_idx,
                 dom_arch,
             });
         }

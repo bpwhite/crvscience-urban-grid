@@ -75,13 +75,52 @@ pub fn run_tui(mut world: SimulationWorld) -> std::io::Result<()> {
                         );
                     }
                     KeyCode::Char('u') => {
-                        let _ = world.undo_edit();
+                        status_msg = Some(if let Some(out) = world.undo_edit() {
+                            (
+                                format!(
+                                    "Undid [{}]: {} ({} undo / {} redo)",
+                                    out.category.short_tag(),
+                                    out.label,
+                                    out.undo_remaining,
+                                    out.redo_remaining
+                                ),
+                                false,
+                            )
+                        } else {
+                            ("Nothing to undo.".to_string(), false)
+                        });
                     }
                     KeyCode::Char('r') => {
-                        let _ = world.redo_edit();
+                        status_msg = Some(if let Some(out) = world.redo_edit() {
+                            (
+                                format!(
+                                    "Redid [{}]: {} ({} undo / {} redo)",
+                                    out.category.short_tag(),
+                                    out.label,
+                                    out.undo_remaining,
+                                    out.redo_remaining
+                                ),
+                                false,
+                            )
+                        } else {
+                            ("Nothing to redo.".to_string(), false)
+                        });
                     }
                     KeyCode::Char('v') => {
-                        let _ = world.dispatch_emergency_responder();
+                        status_msg = Some(
+                            if let Some(veh_id) = world.dispatch_emergency_responder() {
+                                (
+                                    format!("Dispatched Emergency Responder #{veh_id}"),
+                                    false,
+                                )
+                            } else {
+                                (
+                                    "No available emergency responder or clear lane to dispatch."
+                                        .to_string(),
+                                    true,
+                                )
+                            },
+                        );
                     }
                     KeyCode::Char('s') => {
                         match world.save_snapshot_json(

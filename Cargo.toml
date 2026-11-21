@@ -9,7 +9,7 @@ resolver = "2"
 version = "5.2.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/example/urban-grid"
+repository = "https://github.com/bpwhite/crvscience-urban-grid"
 rust-version = "1.81"
 
 [workspace.dependencies]

@@ -522,7 +522,6 @@ pub fn run_ffe_conflagration_monte_carlo(
 
     // 3. Precompute Bridge, Road Dijkstra, Substation & Buried Water Pipe structures (matching `seismic_mc.rs`!)
     let bridges = enumerate_seismic_bridge_inventory(net, facilities, &cfg.seismic);
-    let n_b = bridges.len();
 
     let speed_boost = if evp_cfg.enabled { 1.32 } else { 1.02 };
     let base_seg_trav_s: Vec<f64> = net

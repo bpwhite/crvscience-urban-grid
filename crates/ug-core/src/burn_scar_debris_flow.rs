@@ -612,7 +612,7 @@ pub fn run_burn_scar_debris_flow_monte_carlo(
     }
 
     // 3. Match Each Basin's Alluvial-Fan Drainage Channel to its Closest Roadway Culvert Crossing!
-    let mut culvert_Bindings: Vec<(usize, usize, Vec2)> = Vec::new();
+    let mut culvert_bindings: Vec<(usize, usize, Vec2)> = Vec::new();
     let mut used_segs: Vec<usize> = Vec::new();
     for bg in &basins {
         let mid_channel = Vec2 {
@@ -636,14 +636,14 @@ pub fn run_burn_scar_debris_flow_monte_carlo(
         }
         if let Some(sid) = best_sid {
             used_segs.push(sid);
-            culvert_Bindings.push((bg.id, sid, best_pt));
+            culvert_bindings.push((bg.id, sid, best_pt));
         }
     }
 
     // 4. Run Parallel Monte Carlo across Spatially Variable Convective Storm Cells & Debris Plugging
     let trials = cfg.wildfire.monte_carlo_trials.clamp(16, 2_500);
     let seed0 = cfg.wildfire.random_seed ^ 0xBAEB_DF10_2017;
-    let n_culv = culvert_Bindings.len();
+    let n_culv = culvert_bindings.len();
 
     #[derive(Clone)]
     struct StormTrial {
@@ -711,7 +711,7 @@ pub fn run_burn_scar_debris_flow_monte_carlo(
             let mut culv_washed = Vec::with_capacity(n_culv);
             let mut washed_count = 0usize;
 
-            for (c_idx, &(b_id, sid, _)) in culvert_Bindings.iter().enumerate() {
+            for (c_idx, &(b_id, sid, _)) in culvert_bindings.iter().enumerate() {
                 let p_jit = 0.85 + 0.30 * u01_from_u64(splitmix64(s ^ (c_idx as u64 + 97)));
                 let p_df01 = basin_prob[b_id] / 100.0;
                 let base_lanes = net.segments.get(sid).map(|sg| sg.lane_count).unwrap_or(1);
@@ -849,7 +849,7 @@ pub fn run_burn_scar_debris_flow_monte_carlo(
     let mut overtopped_slow_segment_ids = Vec::new();
     let mut surcharged_or_overtopped_culverts = 0usize;
 
-    for (c_idx, &(b_id, sid, c_pos)) in culvert_Bindings.iter().enumerate() {
+    for (c_idx, &(b_id, sid, c_pos)) in culvert_bindings.iter().enumerate() {
         let m_hwd = storm_trials.iter().map(|r| r.culv_hwd[c_idx]).sum::<f64>() * inv_t;
         let m_plug = storm_trials
             .iter()

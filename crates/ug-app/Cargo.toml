@@ -3,6 +3,8 @@ name = "ug-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 description = "Interactive egui + custom wgpu WGSL 120 FPS desktop workbench, Ratatui terminal monitor, and headless batch CLI for urban-grid"
 
 [[bin]]

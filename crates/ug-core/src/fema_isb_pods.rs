@@ -511,7 +511,6 @@ fn nearest_open_seg(net: &RoadNetwork, target: Vec2) -> (usize, Vec2) {
 
 #[derive(Clone)]
 struct SynthPodNode {
-    pod_id: usize,
     name: String,
     pod_class: FemaPodClassification,
     segment_id: usize,
@@ -592,7 +591,7 @@ fn synthesize_isb_csa_and_county_pods(
 
     let n_open = cfg.active_county_pods.clamp(2, templates.len());
     let mut pods = Vec::with_capacity(n_open);
-    for (i, &(nm, cls, fx, fy)) in templates.iter().take(n_open).enumerate() {
+    for &(nm, cls, fx, fy) in templates.iter().take(n_open) {
         let (sid, wpos) = nearest_open_seg(
             net,
             Vec2 {
@@ -601,7 +600,6 @@ fn synthesize_isb_csa_and_county_pods(
             },
         );
         pods.push(SynthPodNode {
-            pod_id: i,
             name: nm.to_string(),
             pod_class: cls,
             segment_id: sid,

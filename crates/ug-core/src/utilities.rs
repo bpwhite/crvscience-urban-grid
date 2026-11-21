@@ -31,7 +31,7 @@
 use crate::diurnal::USFA_DIURNAL_CALL_MULTIPLIERS;
 use crate::emergency::{EmergencyFacility, EmergencyFacilityKind};
 use crate::network::{ControlMode, RoadNetwork, Vec2};
-use crate::zoning::{Parcel, ZoneCode};
+use crate::zoning::Parcel;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs;

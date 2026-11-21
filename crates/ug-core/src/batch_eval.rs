@@ -192,7 +192,6 @@ struct SingleRunJob {
 #[derive(Clone)]
 struct SingleRunMetrics {
     demand_idx: usize,
-    demand_mult: f64,
     regime: BatchControlRegime,
     mean_speed_mph: f64,
     avg_queued_vehicles: f64,
@@ -410,7 +409,6 @@ fn execute_single_job(
 
     Some(SingleRunMetrics {
         demand_idx: job.demand_idx,
-        demand_mult: job.demand_mult,
         regime: job.regime,
         mean_speed_mph,
         avg_queued_vehicles,

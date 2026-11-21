@@ -41,7 +41,7 @@ use crate::seismic_mc::{
     median_pgv_cm_s_from_sa10, normal_cdf_phi, BuriedPipeMaterialClass, SeismicDamageState,
 };
 use crate::utilities::{MIN_FIRE_FLOW_RESIDUAL_PSI, PSI_PER_METER_H2O};
-use crate::zoning::{Parcel, ZoneCode};
+use crate::zoning::Parcel;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;

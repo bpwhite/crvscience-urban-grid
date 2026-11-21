@@ -42,7 +42,7 @@ use crate::hospital_surge::{
 use crate::network::{ControlMode, RoadNetwork, TurnType, Vec2};
 use crate::seismic_mc::{
     ala_hazus_pipe_repair_rate_per_km, enumerate_seismic_bridge_inventory,
-    median_pgv_cm_s_from_sa10, normal_cdf_phi, BuriedPipeMaterialClass, SeismicDamageState,
+    median_pgv_cm_s_from_sa10, normal_cdf_phi, BuriedPipeMaterialClass,
 };
 use crate::utilities::{MIN_FIRE_FLOW_RESIDUAL_PSI, PSI_PER_METER_H2O};
 use crate::zoning::{Parcel, ZoneCode};

@@ -1421,7 +1421,7 @@ mod tests {
         //    only yields 70% expected coverage, so MEXCLP deploys overlapping backup apparatus to reach >= 90%!
         let xml = builtin_riverfront_bridges_osm();
         let net = RoadNetwork::compile(&parse_osm_xml_str(&xml).unwrap());
-        let mut world = SimulationWorld::new(net);
+        let world = SimulationWorld::new(net);
 
         let det_cfg = MclpSitingConfig {
             objective_model: SitingObjectiveModel::DeterministicMclp1974,

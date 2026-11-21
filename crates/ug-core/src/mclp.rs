@@ -691,7 +691,7 @@ fn evaluate_fleet_metrics(
     let expected_cov_pct = (exp_cov_obj * inv_w).clamp(0.0, 100.0);
     let second_due_cov_pct = (backup_cov_obj * inv_w).clamp(0.0, 100.0);
 
-    let (busy_q, expected_cov_pct, second_due_cov_pct, expected_travel_s) =
+    let (_busy_q, expected_cov_pct, second_due_cov_pct, expected_travel_s) =
         if cfg.busyness_model == BusynessModel::LarsonHypercube1974 && m_total >= 1 {
             let mut u_times: Vec<Vec<f64>> = Vec::with_capacity(m_total);
             let mut u_meta: Vec<(String, usize, Vec2)> = Vec::with_capacity(m_total);

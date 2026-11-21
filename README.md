@@ -1,4 +1,4 @@
-# `urban-grid` v4.3.0 — Standalone Microscopic Traffic, GTFS Transit, 50k+ `wgpu` Crowd & Urban Planning Suite
+# `urban-grid` v5.2.0 — Standalone Microscopic Traffic, GTFS Transit, 50k+ `wgpu` Crowd & Urban Planning Suite
 
 ![Urban-Grid Headless Workbench](validation/headless_screenshot.png)
 
@@ -88,12 +88,6 @@ cargo run --release -- simulate --scenario riverfront-bridges --tod-upzone --sec
 - **Bureau of Public Roads (`BPR`, 1964) Tidal Rush-Hour Link Travel-Time Profiles**: Applies directional AM inbound (`07:00-09:59`) and PM outbound (`15:00-18:59`) arterial `V/C` congestion (`t = t_0 * [1 + alpha * (V/C)^beta]`) and signal queue clearance scaling across all 24 hours.
 - **Separate Peak vs. Off-Peak Carter-Chaiken-Ignall Dispatch Tables & Green-Kolesar (1991) 24-Hr `PSA`**: Solves dedicated **Peak Rush** and **Off-Peak Free-Flow** response-district run cards (`1st-due` & `2nd-due`), evaluates the 24-hour Pointwise Stationary Approximation (`PSA`) hypercube trajectory, highlights regime-switching boundary parcels on the `wgpu` viewport, supports undoable Peak/Off-Peak table toggling & live 24-hour clock modulation, and adds `cargo run --release -- diurnal`.
 
-## What's New in v4.3.0 — Diurnal 24-Hour Call & Rush-Hour Travel Profiles + Peak/Off-Peak Dispatch Tables
-
-- **24-Hour USFA/EMS Call Arrival & Commuter Land-Use Shift (`crates/ug-core/src/diurnal.rs`)**: Models exact unit-mean 24-hour call multipliers (`03:00` overnight trough `0.32x` vs. `17:00` surge `1.54x`) alongside spatial commuter population shifts into `CBD`/`IND`/`MU-4` workplaces during daytime hours and back to `R1`/`R3` housing overnight.
-- **Bureau of Public Roads (`BPR`, 1964) Tidal Rush-Hour Link Travel-Time Profiles**: Applies directional AM inbound (`07:00-09:59`) and PM outbound (`15:00-18:59`) arterial `V/C` congestion (`t = t_0 * [1 + alpha * (V/C)^beta]`) and signal queue clearance scaling across all 24 hours.
-- **Separate Peak vs. Off-Peak Carter-Chaiken-Ignall Dispatch Tables & Green-Kolesar (1991) 24-Hr `PSA`**: Solves dedicated **Peak Rush** and **Off-Peak Free-Flow** response-district run cards (`1st-due` & `2nd-due`), evaluates the 24-hour Pointwise Stationary Approximation (`PSA`) hypercube trajectory, highlights regime-switching boundary parcels on the `wgpu` viewport, supports undoable Peak/Off-Peak table toggling & live 24-hour clock modulation, and adds `cargo run --release -- diurnal`.
-
 ## What's New in v4.3.0 — Coupled Electrical, Potable Water & Wastewater Lifeline Grids
 
 - **12.47 kV Electrical Distribution Grid (`crates/ug-core/src/utilities.rs`)**: Linearized Baran & Wu (1989) DistFlow / nodal admittance power-flow solver with substation OLTC voltage regulation, ANSI C84.1 Range A (`0.95..1.05 p.u.`) compliance, feeder `% MVA` ampacity & `I^2 R` resistive losses, diurnal rooftop solar PV & EV fast-charging profiles, and `N-1`/`N-2` substation blackout simulation.
@@ -130,12 +124,6 @@ cargo run --release -- simulate --scenario riverfront-bridges --tod-upzone --sec
 - **Protected Emergency Ambulance / Hospital / Helipad-LZ Corridors & Arterial Contraflow Reversal**: Compares `NoContraflowBaseline`, `FullUnprotectedOneWayOut`, and FHWA/Wolshon `EmsProtectedArterialContraflow` (reversing surplus inbound arterial lanes toward perimeter refuges while strictly preserving `>= 1` dedicated inbound responder lane along Fire, Trauma-Hospital, and Park-`LZ` spines), with live undoable (`Ctrl+Z`/`Ctrl+Y`) application to microscopic `wgpu` traffic!
 - **Staged 3-Zone Neighborhood Evacuation & Clearance S-Curves**: Evaluates `SimultaneousUnstaged`, `FireProximityThreeStage`, and `VulnerabilityAndFireWeighted` mobilization (`T50`/`T90`/`T95` clearance times & fire-overrun exposure), rendered via `HeatmapLayer::EvacuationContraflow`, `StressSubMode::EvacuationContraflow` in `egui`, and `cargo run --release -- evacuate`.
 
-## What's New in v4.3.0 — FFE Conflagration Road Closures, Smoke Speed Reduction, Staged Evacuation & Arterial Contraflow
-
-- **Active FFE Perimeter Road Severance & Wetterberg/Intini Smoke Speed Reduction (`crates/ug-core/src/evacuation_contraflow.rs`)**: Dynamically severs road segments encroached within `fire_perimeter_road_buffer_m` by advancing Scawthorn/Hamada conflagrations and degrades driving speeds & lane saturation flows under Gaussian downwind `PM2.5` Koschmieder smoke visibility (`Wetterberg et al. 2021` / `WUI-NITY`).
-- **Protected Emergency Ambulance / Hospital / Helipad-LZ Corridors & Arterial Contraflow Reversal**: Compares `NoContraflowBaseline`, `FullUnprotectedOneWayOut`, and FHWA/Wolshon `EmsProtectedArterialContraflow` (reversing surplus inbound arterial lanes toward perimeter refuges while strictly preserving `>= 1` dedicated inbound responder lane along Fire, Trauma-Hospital, and Park-`LZ` spines), with live undoable (`Ctrl+Z`/`Ctrl+Y`) application to microscopic `wgpu` traffic!
-- **Staged 3-Zone Neighborhood Evacuation & Clearance S-Curves**: Evaluates `SimultaneousUnstaged`, `FireProximityThreeStage`, and `VulnerabilityAndFireWeighted` mobilization (`T50`/`T90`/`T95` clearance times & fire-overrun exposure), rendered via `HeatmapLayer::EvacuationContraflow`, `StressSubMode::EvacuationContraflow` in `egui`, and `cargo run --release -- evacuate`.
-
 ## What's New in v4.3.0 — Post-Earthquake Emergency Shelter Siting, Lifeline Habitability, HEPA Smoke Filtration & Evacuee Routing
 
 - **FEMA P-361 / ARC 4496 Congregate Shelter Siting & ATC-20 Lifeline Habitability (`crates/ug-core/src/emergency_shelters.rs`)**: Evaluates municipal Fieldhouse Arenas, School Gymnasiums, Civic Convention Halls, and Seismic Park Tent Pavilions (`40-60 sq ft/person`) under spatially correlated ATC-20 structural green-tag fragility coupled to potable water, sanitary sewer, and emergency generator fault trees.
@@ -156,11 +144,6 @@ cargo run --release -- simulate --scenario riverfront-bridges --tod-upzone --sec
 
 - **Post-Earthquake Cellular Base-Station (`BTS`) Blackout Fragility (`crates/ug-core/src/warning_mobilization.rs`)**: Models urban rooftop macrocell, steel monopole, and braced lattice `BTS` failure across structural `PGA` shaking (`Tang et al., EERI Earthquake Spectra`), buried/bridge-hung fiber backhaul `PGV` breaks, and electric-grid blackout + VRLA battery depletion (`Legacy 2.8h` vs. `FCC 15-98 8h` vs. `CPUC D.20-07-011 72h + LEO Satellite`).
 - **Multi-Channel Warning Diffusion (`WEA` vs. `124 dBC` Outdoor Sirens vs. Hi-Lo/Door-to-Door) & Delayed Departure Staging**: Convolves Lindell & Perry (`PADM` / `EMBLEM2`) Weibull warning-receipt + preparation S-curves with NIST TN 1950 outdoor/indoor siren acoustics (`-22 dB` closed-window insertion loss) and `BlackoutCompensatedAdaptiveStaging` (`Ctrl+Z` undoable parcel staging!), rendered via `HeatmapLayer::WarningMobilization`, `StressSubMode::WarningMobilization`, and `cargo run --release -- warning`.
-
-## What's New in v4.3.0 — FEMA Communications Systems (IPAWS-OPEN CAP v1.2, NPWS/PEP EAS, NOAA SAME, FNARS & MERS ESF #2)
-
-- **FEMA `IPAWS-OPEN` (`CAP v1.2`) Multi-Pathway Public Alerting (`crates/ug-core/src/fema_comms.rs`)**: Models County `COG` EOC `CAP v1.2` XML origination resilience (`Commercial Fiber` vs. **`FNARS` `3–30 MHz` HF ALE/NVIS Skywave** + **`MERS` Ku/Ka/LEO VSAT**) feeding **`WEA 3.0`** (`360-char` `0.1-mi` polygon cell-broadcast), **`EAS` via FEMA `NPWS` Primary Entry Point (`PEP`)** (`50 kW` EMP/seismic-hardened `60-day` diesel AM/FM groundwave broadcast, `47 CFR Part 11`), and **`NOAA Weather Radio All Hazards` (`NWEM` `162.550 MHz` VHF + `1050 Hz` `SAME` bedroom auto-wake alarm)**.
-- **FEMA Region 10 `MERS` (`Bothell MOC` `IRV`/`MEOV` + Fly-Away Kits) & `ESF #2` `NIFOG` Tactical `LMR` Interoperability**: Deploys mobile `MERS` satellite/repeater/FirstNet `COLT` vehicles across damaged bridges (with `UH-60` Fly-Away airlift fallback and `Ctrl+Z` undoable parcel/EOC state updates), rendered via `HeatmapLayer::FemaCommsArchitecture`, `StressSubMode::FemaCommsArchitecture`, and `cargo run --release -- fema-comms`.
 
 ## What's New in v4.3.0 — FEMA Communications Systems (IPAWS-OPEN CAP v1.2, NPWS/PEP EAS, NOAA SAME, FNARS & MERS ESF #2)
 

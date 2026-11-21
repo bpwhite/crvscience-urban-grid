@@ -220,7 +220,7 @@ impl LabelPlacer {
             let edge_pt = rect.center();
             painter.line_segment(
                 [anchor, edge_pt],
-                Stroke::new(1.0, Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 120)),
+                Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 120)),
             );
         }
         painter.rect_filled(rect, 3.0, bg);
@@ -499,6 +499,7 @@ pub struct UrbanGridGuiApp {
     resilience_cat_filter: ResilienceCategoryFilter,
     hub_search_query: String,
     command_palette_open: bool,
+    command_palette_just_opened: bool,
     command_palette_query: String,
     show_cad_toolbar: bool,
 }
@@ -684,6 +685,7 @@ impl UrbanGridGuiApp {
             resilience_cat_filter: ResilienceCategoryFilter::All17,
             hub_search_query: String::new(),
             command_palette_open: false,
+            command_palette_just_opened: false,
             command_palette_query: String::new(),
             show_cad_toolbar: true,
         }
@@ -830,6 +832,46 @@ impl UrbanGridGuiApp {
         }
     }
 
+    /// Clears active road-draw state and all cached previous-city scenario/A-B reports.
+    fn clear_cached_scenario_reports(&mut self) {
+        self.draw_start_world = None;
+        self.latest_mclp_report = None;
+        self.latest_hypercube_report = None;
+        self.latest_redistricting_report = None;
+        self.latest_diurnal_report = None;
+        self.latest_ffe_report = None;
+        self.latest_surge_report = None;
+        self.surge_ab_summary = None;
+        self.latest_medevac_report = None;
+        self.medevac_ab_summary = None;
+        self.latest_evac_report = None;
+        self.evac_ab_summary = None;
+        self.latest_shelters_report = None;
+        self.shelters_ab_summary = None;
+        self.latest_resupply_report = None;
+        self.resupply_ab_summary = None;
+        self.latest_transit_evac_report = None;
+        self.transit_evac_ab_summary = None;
+        self.latest_warning_report = None;
+        self.warning_ab_summary = None;
+        self.latest_fema_comms_report = None;
+        self.fema_comms_ab_summary = None;
+        self.latest_fema_pods_report = None;
+        self.fema_pods_ab_summary = None;
+        self.latest_fema_usar_report = None;
+        self.fema_usar_ab_summary = None;
+        self.latest_fema_rec_report = None;
+        self.fema_rec_ab_summary = None;
+        self.latest_wildfire_report = None;
+        self.wildfire_ab_summary = None;
+        self.latest_debris_flow_report = None;
+        self.debris_flow_ab_summary = None;
+        self.latest_wtp_turb_report = None;
+        self.wtp_turb_ab_summary = None;
+        self.latest_stress_report = None;
+        self.latest_seismic_report = None;
+    }
+
     fn load_builtin(&mut self, xml: &str, megacity_crowd: Option<usize>) {
         if let Ok(osm) = parse_osm_xml_str(xml) {
             let net = RoadNetwork::compile(&osm);
@@ -847,42 +889,7 @@ impl UrbanGridGuiApp {
             self.cam_zoom = (760.0 / span).clamp(0.28, 2.2);
             self.selected_junction = 0;
             self.selected_segment = w.watched_segment_id;
-            self.draw_start_world = None;
-            self.latest_mclp_report = None;
-            self.latest_hypercube_report = None;
-            self.latest_redistricting_report = None;
-            self.latest_diurnal_report = None;
-            self.latest_ffe_report = None;
-            self.latest_surge_report = None;
-            self.surge_ab_summary = None;
-            self.latest_medevac_report = None;
-            self.medevac_ab_summary = None;
-            self.latest_evac_report = None;
-            self.evac_ab_summary = None;
-            self.latest_shelters_report = None;
-            self.shelters_ab_summary = None;
-            self.latest_resupply_report = None;
-            self.resupply_ab_summary = None;
-            self.latest_transit_evac_report = None;
-            self.transit_evac_ab_summary = None;
-            self.latest_warning_report = None;
-            self.warning_ab_summary = None;
-            self.latest_fema_comms_report = None;
-            self.fema_comms_ab_summary = None;
-            self.latest_fema_pods_report = None;
-            self.fema_pods_ab_summary = None;
-            self.latest_fema_usar_report = None;
-            self.fema_usar_ab_summary = None;
-            self.latest_fema_rec_report = None;
-            self.fema_rec_ab_summary = None;
-            self.latest_wildfire_report = None;
-            self.wildfire_ab_summary = None;
-            self.latest_debris_flow_report = None;
-            self.debris_flow_ab_summary = None;
-            self.latest_wtp_turb_report = None;
-            self.wtp_turb_ab_summary = None;
-            self.latest_stress_report = None;
-            self.latest_seismic_report = None;
+            self.clear_cached_scenario_reports();
             self.physics_accum_s = 0.0;
             self.plume_reset_pending = true;
             self.heatmap_dirty = true;
@@ -916,6 +923,7 @@ impl UrbanGridGuiApp {
         self.paused = true;
         self.screen = GuiScreen::ActiveWorkbench;
         self.command_palette_open = false;
+        self.command_palette_just_opened = false;
     }
 
     fn enter_workbench_running(
@@ -970,6 +978,11 @@ impl UrbanGridGuiApp {
             return;
         }
         let mut keep_open = true;
+        let enter_pressed = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+        let mut first_match: Option<(DockTab, Option<StressSubMode>, HeatmapLayer, ViewportTool)> =
+            None;
+        let mut activated: Option<(DockTab, Option<StressSubMode>, HeatmapLayer, ViewportTool)> =
+            None;
         egui::Window::new("Quick-Jump Module & Scenario Palette (Ctrl+K)")
             .open(&mut keep_open)
             .collapsible(false)
@@ -984,11 +997,13 @@ impl UrbanGridGuiApp {
                             .hint_text("Type module, FEMA system, lifeline, CAD tool, or scenario...")
                             .desired_width(420.0),
                     );
-                    if self.command_palette_query.is_empty() {
+                    if self.command_palette_just_opened {
                         resp.request_focus();
+                        self.command_palette_just_opened = false;
                     }
                     if ui.small_button("Clear").clicked() {
                         self.command_palette_query.clear();
+                        resp.request_focus();
                     }
                 });
                 ui.separator();
@@ -1222,6 +1237,9 @@ impl UrbanGridGuiApp {
                             {
                                 continue;
                             }
+                            if first_match.is_none() {
+                                first_match = Some((tab, sm, lyr, tl));
+                            }
                             ui.horizontal(|ui| {
                                 if ui
                                     .button(
@@ -1231,15 +1249,23 @@ impl UrbanGridGuiApp {
                                     )
                                     .clicked()
                                 {
-                                    self.enter_workbench(tab, sm, lyr, tl);
+                                    activated = Some((tab, sm, lyr, tl));
                                 }
                                 ui.label(desc);
                             });
                         }
+                        if first_match.is_none() {
+                            ui.weak("No matching modules or scenarios.");
+                        }
                     });
             });
-        if !keep_open {
+        if let Some((tab, sm, lyr, tl)) =
+            activated.or_else(|| if enter_pressed { first_match } else { None })
+        {
+            self.enter_workbench(tab, sm, lyr, tl);
+        } else if !keep_open {
             self.command_palette_open = false;
+            self.command_palette_just_opened = false;
         }
     }
 
@@ -1258,7 +1284,7 @@ impl UrbanGridGuiApp {
                         // Hero Entrance Header Card
                         egui::Frame::group(ui.style())
                             .fill(Color32::from_rgb(15, 23, 42))
-                            .stroke(Stroke::new(1.2, Color32::from_rgb(51, 65, 85)))
+                            .stroke(Stroke::new(1.2_f32, Color32::from_rgb(51, 65, 85)))
                             .rounding(8.0)
                             .inner_margin(16.0)
                             .show(ui, |ui| {
@@ -1333,6 +1359,7 @@ impl UrbanGridGuiApp {
                                                 .clicked()
                                             {
                                                 self.command_palette_open = true;
+                                                self.command_palette_just_opened = true;
                                             }
                                         },
                                     );
@@ -1344,7 +1371,7 @@ impl UrbanGridGuiApp {
                         // Row 1: Built-in Urban Scenarios & Snapshot Loader
                         egui::Frame::group(ui.style())
                             .fill(Color32::from_rgb(13, 20, 36))
-                            .stroke(Stroke::new(1.0, Color32::from_rgb(38, 52, 78)))
+                            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(38, 52, 78)))
                             .rounding(7.0)
                             .inner_margin(12.0)
                             .show(ui, |ui| {
@@ -1853,7 +1880,7 @@ impl UrbanGridGuiApp {
 
                             egui::Frame::group(ui.style())
                                 .fill(Color32::from_rgb(13, 20, 36))
-                                .stroke(Stroke::new(1.0, Color32::from_rgb(38, 52, 78)))
+                                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(38, 52, 78)))
                                 .rounding(7.0)
                                 .inner_margin(11.0)
                                 .show(ui, |ui| {
@@ -1869,7 +1896,7 @@ impl UrbanGridGuiApp {
                                                 egui::Frame::group(ui.style())
                                                     .fill(Color32::from_rgb(19, 28, 48))
                                                     .stroke(Stroke::new(
-                                                        1.0,
+                                                        1.0_f32,
                                                         Color32::from_rgb(48, 64, 92),
                                                     ))
                                                     .rounding(5.0)
@@ -1978,6 +2005,7 @@ impl UrbanGridGuiApp {
                 self.cam_zoom = (760.0 / span).clamp(0.28, 2.2);
                 self.selected_junction = 0;
                 self.selected_segment = loaded_world.watched_segment_id;
+                self.clear_cached_scenario_reports();
                 self.plume_params = loaded_plume;
                 self.set_io_ok(format!(
                     "Loaded {} (t={:.1}s, {} agents)",
@@ -2025,16 +2053,29 @@ impl UrbanGridGuiApp {
             }
         }
 
-        // Global Navigation Shortcuts: `Ctrl+K` Command Palette & `F1` / `Home` Main Entrance Hub toggle
-        let (toggle_palette, toggle_home, toggle_pause) = ctx.input_mut(|i| {
+        // Global Navigation Shortcuts: `Escape` modal dismissal, `Ctrl+K` Command Palette & `F1` / `Home` Main Entrance Hub toggle
+        let (toggle_palette, toggle_home, esc_close, toggle_pause) = ctx.input_mut(|i| {
             let cmd_k = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::K);
             let tk = i.consume_shortcut(&cmd_k);
-            let th = !tk && (i.key_pressed(egui::Key::F1) || i.key_pressed(egui::Key::Home));
+            let esc = (self.about_open || self.command_palette_open)
+                && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            let th = !tk
+                && !esc
+                && (i.key_pressed(egui::Key::F1) || i.key_pressed(egui::Key::Home));
             let tp = i.key_pressed(egui::Key::Space);
-            (tk, th, tp)
+            (tk, th, esc, tp)
         });
+        if esc_close {
+            if self.about_open {
+                self.about_open = false;
+            } else if self.command_palette_open {
+                self.command_palette_open = false;
+                self.command_palette_just_opened = false;
+            }
+        }
         if toggle_palette {
             self.command_palette_open = !self.command_palette_open;
+            self.command_palette_just_opened = self.command_palette_open;
         }
         if toggle_home && !ctx.wants_keyboard_input() {
             self.screen = match self.screen {
@@ -2139,6 +2180,7 @@ impl UrbanGridGuiApp {
                     .clicked()
                 {
                     self.command_palette_open = !self.command_palette_open;
+                    self.command_palette_just_opened = self.command_palette_open;
                 }
                 ui.checkbox(&mut self.show_cad_toolbar, "CAD Bar");
                 ui.separator();
@@ -3114,7 +3156,7 @@ E[Travel]  : {:.1}s | 2nd-Due Backup P90: {:.0}s",
                                         Pos2::new(p_rect.right() - 6.0, tgt_y),
                                     ],
                                     Stroke::new(
-                                        1.0,
+                                        1.0_f32,
                                         Color32::from_rgba_unmultiplied(250, 204, 21, 130),
                                     ),
                                 );
@@ -3155,15 +3197,15 @@ E[Travel]  : {:.1}s | 2nd-Due Backup P90: {:.0}s",
                                 }
                                 pp.add(egui::Shape::line(
                                     poly_bin,
-                                    Stroke::new(1.3, Color32::from_rgb(56, 189, 248)),
+                                    Stroke::new(1.3_f32, Color32::from_rgb(56, 189, 248)),
                                 ));
                                 pp.add(egui::Shape::line(
                                     poly_bkp,
-                                    Stroke::new(1.6, Color32::from_rgb(251, 146, 60)),
+                                    Stroke::new(1.6_f32, Color32::from_rgb(251, 146, 60)),
                                 ));
                                 pp.add(egui::Shape::line(
                                     poly_exp,
-                                    Stroke::new(2.3, Color32::from_rgb(52, 211, 153)),
+                                    Stroke::new(2.3_f32, Color32::from_rgb(52, 211, 153)),
                                 ));
                                 pp.text(
                                     Pos2::new(p_rect.left() + 8.0, p_rect.top() + 2.0),
@@ -3497,7 +3539,7 @@ Beats : {}/{} parcels shifted ({:.1}% demand) | {} HC evals",
                                 fp.rect_stroke(
                                     f_rect,
                                     4.0,
-                                    Stroke::new(1.0, Color32::from_rgb(38, 52, 78)),
+                                    Stroke::new(1.0_f32, Color32::from_rgb(38, 52, 78)),
                                 );
 
                                 let mut min_t = rrep.voronoi_hypercube.mean_dispatch_travel_s;
@@ -3528,7 +3570,7 @@ Beats : {}/{} parcels shifted ({:.1}% demand) | {} HC evals",
                                 }
                                 fp.add(egui::Shape::line(
                                     poly,
-                                    Stroke::new(2.0, Color32::from_rgb(56, 189, 248)),
+                                    Stroke::new(2.0_f32, Color32::from_rgb(56, 189, 248)),
                                 ));
 
                                 // Mark Voronoi (`s = 0`) in crimson and active Optimal Plan in gold!
@@ -3539,7 +3581,7 @@ Beats : {}/{} parcels shifted ({:.1}% demand) | {} HC evals",
                                 fp.circle_stroke(
                                     vor_pos,
                                     4.5,
-                                    Stroke::new(1.8, Color32::from_rgb(244, 63, 94)),
+                                    Stroke::new(1.8_f32, Color32::from_rgb(244, 63, 94)),
                                 );
                                 let opt_pos = map_pt(
                                     rrep.optimized_hypercube.mean_dispatch_travel_s,
@@ -3778,7 +3820,7 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                             cp.rect_stroke(
                                 c_rect,
                                 4.0,
-                                Stroke::new(1.0, Color32::from_rgb(38, 52, 78)),
+                                Stroke::new(1.0_f32, Color32::from_rgb(38, 52, 78)),
                             );
 
                             let max_lam = drep
@@ -3833,11 +3875,11 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                             }
                             cp.add(egui::Shape::line(
                                 vor_line,
-                                Stroke::new(1.4, Color32::from_rgb(244, 63, 94)),
+                                Stroke::new(1.4_f32, Color32::from_rgb(244, 63, 94)),
                             ));
                             cp.add(egui::Shape::line(
                                 dual_line,
-                                Stroke::new(2.1, Color32::from_rgb(52, 211, 153)),
+                                Stroke::new(2.1_f32, Color32::from_rgb(52, 211, 153)),
                             ));
 
                             // Current simulated diurnal clock vertical cursor
@@ -3850,7 +3892,7 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                     Pos2::new(cur_x, c_rect.top() + 12.0),
                                     Pos2::new(cur_x, c_rect.bottom() - 12.0),
                                 ],
-                                Stroke::new(1.4, Color32::from_rgb(250, 204, 21)),
+                                Stroke::new(1.4_f32, Color32::from_rgb(250, 204, 21)),
                             );
                             cp.text(
                                 Pos2::new(c_rect.left() + 6.0, c_rect.top() + 2.0),
@@ -5281,7 +5323,7 @@ Click name to pan camera",
                                         }
                                         fp.add(egui::Shape::line(
                                             poly,
-                                            Stroke::new(1.8, ds_colors[ds_i]),
+                                            Stroke::new(1.8_f32, ds_colors[ds_i]),
                                         ));
                                     }
                                     if let Some(mcrep) = self.latest_seismic_report.as_ref() {
@@ -5295,7 +5337,7 @@ Click name to pan camera",
                                                 Pos2::new(med_x, f_rect.top() + 6.0),
                                                 Pos2::new(med_x, f_rect.bottom() - 14.0),
                                             ],
-                                            Stroke::new(1.3, Color32::from_rgb(125, 211, 252)),
+                                            Stroke::new(1.3_f32, Color32::from_rgb(125, 211, 252)),
                                         );
                                         fp.text(
                                             Pos2::new(
@@ -5344,7 +5386,7 @@ Click name to pan camera",
                                                 Pos2::new(bx, r_rect.bottom() - 14.0),
                                             ],
                                             Stroke::new(
-                                                1.0,
+                                                1.0_f32,
                                                 Color32::from_rgba_unmultiplied(148, 163, 184, 70),
                                             ),
                                         );
@@ -5375,7 +5417,7 @@ Click name to pan camera",
                                         }
                                         rp.add(egui::Shape::line(
                                             poly,
-                                            Stroke::new(1.85, ds_colors[ds_i]),
+                                            Stroke::new(1.85_f32, ds_colors[ds_i]),
                                         ));
                                     }
                                     rp.text(
@@ -5424,7 +5466,7 @@ Click name to pan camera",
                                         }
                                         pp.add(egui::Shape::line(
                                             poly,
-                                            Stroke::new(1.85, mat_cols[m_i]),
+                                            Stroke::new(1.85_f32, mat_cols[m_i]),
                                         ));
                                     }
                                     if let Some(mcrep) = self.latest_seismic_report.as_ref() {
@@ -5439,7 +5481,7 @@ Click name to pan camera",
                                                 Pos2::new(px, p_rect.top() + 8.0),
                                                 Pos2::new(px, p_rect.bottom() - 15.0),
                                             ],
-                                            Stroke::new(1.3, Color32::from_rgb(250, 204, 21)),
+                                            Stroke::new(1.3_f32, Color32::from_rgb(250, 204, 21)),
                                         );
                                         pp.text(
                                             Pos2::new(
@@ -5630,7 +5672,7 @@ Closed: E[B]={:.2} (P90={} br) | P(Cov>={:.0}%) = {:.1}%",
                                             Pos2::new(rc_rect.right() - 8.0, y_tgt),
                                         ],
                                         Stroke::new(
-                                            1.0,
+                                            1.0_f32,
                                             Color32::from_rgba_unmultiplied(250, 204, 21, 140),
                                         ),
                                     );
@@ -5652,7 +5694,7 @@ Closed: E[B]={:.2} (P90={} br) | P(Cov>={:.0}%) = {:.1}%",
                                                     Pos2::new(x, rc_rect.bottom() - 15.0),
                                                 ],
                                                 Stroke::new(
-                                                    1.0,
+                                                    1.0_f32,
                                                     Color32::from_rgba_unmultiplied(148, 163, 184, 55),
                                                 ),
                                             );
@@ -5683,27 +5725,27 @@ Closed: E[B]={:.2} (P90={} br) | P(Cov>={:.0}%) = {:.1}%",
                                     }
                                     rcp.add(egui::Shape::line(
                                         poly_elec,
-                                        Stroke::new(1.4, Color32::from_rgb(250, 204, 21)),
+                                        Stroke::new(1.4_f32, Color32::from_rgb(250, 204, 21)),
                                     ));
                                     rcp.add(egui::Shape::line(
                                         poly_watr,
-                                        Stroke::new(1.6, Color32::from_rgb(56, 189, 248)),
+                                        Stroke::new(1.6_f32, Color32::from_rgb(56, 189, 248)),
                                     ));
                                     rcp.add(egui::Shape::line(
                                         poly_sewr,
-                                        Stroke::new(1.4, Color32::from_rgb(192, 132, 252)),
+                                        Stroke::new(1.4_f32, Color32::from_rgb(192, 132, 252)),
                                     ));
                                     rcp.add(egui::Shape::line(
                                         poly_p90,
-                                        Stroke::new(1.3, Color32::from_rgb(52, 211, 153)),
+                                        Stroke::new(1.3_f32, Color32::from_rgb(52, 211, 153)),
                                     ));
                                     rcp.add(egui::Shape::line(
                                         poly_mean,
-                                        Stroke::new(2.3, Color32::from_rgb(56, 189, 248)),
+                                        Stroke::new(2.3_f32, Color32::from_rgb(56, 189, 248)),
                                     ));
                                     rcp.add(egui::Shape::line(
                                         poly_p10,
-                                        Stroke::new(1.6, Color32::from_rgb(244, 63, 94)),
+                                        Stroke::new(1.6_f32, Color32::from_rgb(244, 63, 94)),
                                     ));
 
                                     let sel_idx = self
@@ -6142,11 +6184,11 @@ Loss   : E[$]={:.1}M (P90=${:.1}M) | Displ={:.0} res",
                                 }
                                 ep.add(egui::Shape::line(
                                     poly_w,
-                                    Stroke::new(2.0, Color32::from_rgb(251, 146, 60)),
+                                    Stroke::new(2.0_f32, Color32::from_rgb(251, 146, 60)),
                                 ));
                                 ep.add(egui::Shape::line(
                                     poly_c,
-                                    Stroke::new(1.6, Color32::from_rgb(56, 189, 248)),
+                                    Stroke::new(1.6_f32, Color32::from_rgb(56, 189, 248)),
                                 ));
                                 ep.circle_filled(center_p, 2.5, Color32::from_rgb(244, 63, 94));
                                 let wr = frep.config.wind_direction_deg.to_radians() as f32;
@@ -6158,7 +6200,7 @@ Loss   : E[$]={:.1}M (P90=${:.1}M) | Displ={:.0} res",
                                             center_p.y + 36.0 * wr.sin(),
                                         ),
                                     ],
-                                    Stroke::new(1.5, Color32::from_rgb(250, 204, 21)),
+                                    Stroke::new(1.5_f32, Color32::from_rgb(250, 204, 21)),
                                 );
                                 ep.text(
                                     Pos2::new(e_rect.left() + 185.0, e_rect.top() + 16.0),
@@ -6396,11 +6438,11 @@ Sky = Fire-Res CBD",
                                     }
                                     qp.add(egui::Shape::line(
                                         poly_q,
-                                        Stroke::new(1.7, Color32::from_rgb(56, 189, 248)),
+                                        Stroke::new(1.7_f32, Color32::from_rgb(56, 189, 248)),
                                     ));
                                     qp.add(egui::Shape::line(
                                         poly_w,
-                                        Stroke::new(2.1, Color32::from_rgb(244, 63, 94)),
+                                        Stroke::new(2.1_f32, Color32::from_rgb(244, 63, 94)),
                                     ));
                                     qp.text(
                                         Pos2::new(q_rect.left() + 8.0, q_rect.top() + 3.0),
@@ -6660,15 +6702,15 @@ Sky = Fire-Res CBD",
                                     }
                                     mp.add(egui::Shape::line(
                                         poly_env,
-                                        Stroke::new(1.5, Color32::from_rgb(52, 211, 153)),
+                                        Stroke::new(1.5_f32, Color32::from_rgb(52, 211, 153)),
                                     ));
                                     mp.add(egui::Shape::line(
                                         poly_air,
-                                        Stroke::new(2.1, Color32::from_rgb(56, 189, 248)),
+                                        Stroke::new(2.1_f32, Color32::from_rgb(56, 189, 248)),
                                     ));
                                     mp.add(egui::Shape::line(
                                         poly_cct,
-                                        Stroke::new(1.7, Color32::from_rgb(251, 146, 60)),
+                                        Stroke::new(1.7_f32, Color32::from_rgb(251, 146, 60)),
                                     ));
                                     mp.text(
                                         Pos2::new(m_rect.left() + 8.0, m_rect.top() + 3.0),
@@ -6932,11 +6974,11 @@ Sky = Fire-Res CBD",
                                     }
                                     ep.add(egui::Shape::line(
                                         poly_c,
-                                        Stroke::new(2.2, Color32::from_rgb(52, 211, 153)),
+                                        Stroke::new(2.2_f32, Color32::from_rgb(52, 211, 153)),
                                     ));
                                     ep.add(egui::Shape::line(
                                         poly_q,
-                                        Stroke::new(1.7, Color32::from_rgb(251, 146, 60)),
+                                        Stroke::new(1.7_f32, Color32::from_rgb(251, 146, 60)),
                                     ));
                                     ep.text(
                                         Pos2::new(e_rect.left() + 8.0, e_rect.top() + 3.0),
@@ -7188,21 +7230,21 @@ Sky = Fire-Res CBD",
                                             Pos2::new(s_rect.right() - 8.0, y_epa),
                                         ],
                                         Stroke::new(
-                                            1.0,
+                                            1.0_f32,
                                             Color32::from_rgba_unmultiplied(250, 204, 21, 145),
                                         ),
                                     );
                                     sp.add(egui::Shape::line(
                                         p8,
-                                        Stroke::new(1.7, Color32::from_rgb(244, 63, 94)),
+                                        Stroke::new(1.7_f32, Color32::from_rgb(244, 63, 94)),
                                     ));
                                     sp.add(egui::Shape::line(
                                         p13,
-                                        Stroke::new(1.7, Color32::from_rgb(251, 146, 60)),
+                                        Stroke::new(1.7_f32, Color32::from_rgb(251, 146, 60)),
                                     ));
                                     sp.add(egui::Shape::line(
                                         phepa,
-                                        Stroke::new(2.2, Color32::from_rgb(52, 211, 153)),
+                                        Stroke::new(2.2_f32, Color32::from_rgb(52, 211, 153)),
                                     ));
                                     sp.text(
                                         Pos2::new(s_rect.left() + 8.0, s_rect.top() + 3.0),
@@ -7455,15 +7497,15 @@ Sky = Fire-Res CBD",
                                     }
                                     dp.add(egui::Shape::line(
                                         poly_br,
-                                        Stroke::new(1.7, Color32::from_rgb(52, 211, 153)),
+                                        Stroke::new(1.7_f32, Color32::from_rgb(52, 211, 153)),
                                     ));
                                     dp.add(egui::Shape::line(
                                         poly_wt,
-                                        Stroke::new(1.7, Color32::from_rgb(56, 189, 248)),
+                                        Stroke::new(1.7_f32, Color32::from_rgb(56, 189, 248)),
                                     ));
                                     dp.add(egui::Shape::line(
                                         poly_dp,
-                                        Stroke::new(2.1, Color32::from_rgb(244, 63, 94)),
+                                        Stroke::new(2.1_f32, Color32::from_rgb(244, 63, 94)),
                                     ));
                                     dp.text(
                                         Pos2::new(d_rect.left() + 8.0, d_rect.top() + 3.0),
@@ -7738,15 +7780,15 @@ Sky = Fire-Res CBD",
                                     }
                                     wp.add(egui::Shape::line(
                                         poly_car,
-                                        Stroke::new(1.8, Color32::from_rgb(45, 212, 191)),
+                                        Stroke::new(1.8_f32, Color32::from_rgb(45, 212, 191)),
                                     ));
                                     wp.add(egui::Shape::line(
                                         poly_ada,
-                                        Stroke::new(1.8, Color32::from_rgb(232, 121, 249)),
+                                        Stroke::new(1.8_f32, Color32::from_rgb(232, 121, 249)),
                                     ));
                                     wp.add(egui::Shape::line(
                                         poly_cln,
-                                        Stroke::new(2.1, Color32::from_rgb(250, 204, 21)),
+                                        Stroke::new(2.1_f32, Color32::from_rgb(250, 204, 21)),
                                     ));
                                     wp.text(
                                         Pos2::new(w_rect.left() + 8.0, w_rect.top() + 3.0),
@@ -8025,19 +8067,19 @@ Sky = Fire-Res CBD",
                                     }
                                     mp.add(egui::Shape::line(
                                         poly_wea,
-                                        Stroke::new(1.7, Color32::from_rgb(244, 63, 94)),
+                                        Stroke::new(1.7_f32, Color32::from_rgb(244, 63, 94)),
                                     ));
                                     mp.add(egui::Shape::line(
                                         poly_sir,
-                                        Stroke::new(1.7, Color32::from_rgb(250, 204, 21)),
+                                        Stroke::new(1.7_f32, Color32::from_rgb(250, 204, 21)),
                                     ));
                                     mp.add(egui::Shape::line(
                                         poly_mul,
-                                        Stroke::new(2.1, Color32::from_rgb(52, 211, 153)),
+                                        Stroke::new(2.1_f32, Color32::from_rgb(52, 211, 153)),
                                     ));
                                     mp.add(egui::Shape::line(
                                         poly_clr,
-                                        Stroke::new(1.8, Color32::from_rgb(56, 189, 248)),
+                                        Stroke::new(1.8_f32, Color32::from_rgb(56, 189, 248)),
                                     ));
                                     mp.text(
                                         Pos2::new(m_rect.left() + 8.0, m_rect.top() + 3.0),
@@ -8305,19 +8347,19 @@ Sky = Fire-Res CBD",
                                     }
                                     fp.add(egui::Shape::line(
                                         poly_w,
-                                        Stroke::new(1.6, Color32::from_rgb(244, 63, 94)),
+                                        Stroke::new(1.6_f32, Color32::from_rgb(244, 63, 94)),
                                     ));
                                     fp.add(egui::Shape::line(
                                         poly_p,
-                                        Stroke::new(1.7, Color32::from_rgb(250, 204, 21)),
+                                        Stroke::new(1.7_f32, Color32::from_rgb(250, 204, 21)),
                                     ));
                                     fp.add(egui::Shape::line(
                                         poly_n,
-                                        Stroke::new(1.8, Color32::from_rgb(56, 189, 248)),
+                                        Stroke::new(1.8_f32, Color32::from_rgb(56, 189, 248)),
                                     ));
                                     fp.add(egui::Shape::line(
                                         poly_m,
-                                        Stroke::new(2.2, Color32::from_rgb(52, 211, 153)),
+                                        Stroke::new(2.2_f32, Color32::from_rgb(52, 211, 153)),
                                     ));
                                     fp.text(
                                         Pos2::new(f_rect.left() + 8.0, f_rect.top() + 3.0),
@@ -8595,15 +8637,15 @@ Sky = Fire-Res CBD",
                                     }
                                     pp.add(egui::Shape::line(
                                         poly_srv,
-                                        Stroke::new(2.0, Color32::from_rgb(52, 211, 153)),
+                                        Stroke::new(2.0_f32, Color32::from_rgb(52, 211, 153)),
                                     ));
                                     pp.add(egui::Shape::line(
                                         poly_wt,
-                                        Stroke::new(1.8, Color32::from_rgb(250, 204, 21)),
+                                        Stroke::new(1.8_f32, Color32::from_rgb(250, 204, 21)),
                                     ));
                                     pp.add(egui::Shape::line(
                                         poly_sp,
-                                        Stroke::new(1.9, Color32::from_rgb(244, 63, 94)),
+                                        Stroke::new(1.9_f32, Color32::from_rgb(244, 63, 94)),
                                     ));
                                     pp.text(
                                         Pos2::new(p_rect.left() + 8.0, p_rect.top() + 3.0),
@@ -8859,15 +8901,15 @@ Sky = Fire-Res CBD",
                                     }
                                     up.add(egui::Shape::line(
                                         poly_pod,
-                                        Stroke::new(1.8, Color32::from_rgb(250, 204, 21)),
+                                        Stroke::new(1.8_f32, Color32::from_rgb(250, 204, 21)),
                                     ));
                                     up.add(egui::Shape::line(
                                         poly_grd,
-                                        Stroke::new(1.8, Color32::from_rgb(56, 189, 248)),
+                                        Stroke::new(1.8_f32, Color32::from_rgb(56, 189, 248)),
                                     ));
                                     up.add(egui::Shape::line(
                                         poly_sav,
-                                        Stroke::new(2.2, Color32::from_rgb(52, 211, 153)),
+                                        Stroke::new(2.2_f32, Color32::from_rgb(52, 211, 153)),
                                     ));
                                     up.text(
                                         Pos2::new(u_rect.left() + 8.0, u_rect.top() + 3.0),
@@ -9092,15 +9134,15 @@ DRC & MRIC: {:.1}% IA reg ({:.0} HH) | Wait {:.1}m | ${:.2}M IA+SBA",
                                     }
                                     dp.add(egui::Shape::line(
                                         poly_pwr,
-                                        Stroke::new(2.0, Color32::from_rgb(250, 204, 21)),
+                                        Stroke::new(2.0_f32, Color32::from_rgb(250, 204, 21)),
                                     ));
                                     dp.add(egui::Shape::line(
                                         poly_haul,
-                                        Stroke::new(1.8, Color32::from_rgb(56, 189, 248)),
+                                        Stroke::new(1.8_f32, Color32::from_rgb(56, 189, 248)),
                                     ));
                                     dp.add(egui::Shape::line(
                                         poly_ia,
-                                        Stroke::new(2.1, Color32::from_rgb(52, 211, 153)),
+                                        Stroke::new(2.1_f32, Color32::from_rgb(52, 211, 153)),
                                     ));
                                     dp.text(
                                         Pos2::new(d_rect.left() + 8.0, d_rect.top() + 3.0),
@@ -9433,11 +9475,11 @@ Attack   : {:.1} ac (P90 {:.1}) | Cont={:.0}% | Phos-Chek={:.0} gal | GoEvac={:.
                                     }
                                     wp.add(egui::Shape::line(
                                         poly_ac,
-                                        Stroke::new(2.1, Color32::from_rgb(248, 113, 113)),
+                                        Stroke::new(2.1_f32, Color32::from_rgb(248, 113, 113)),
                                     ));
                                     wp.add(egui::Shape::line(
                                         poly_cnt,
-                                        Stroke::new(2.0, Color32::from_rgb(52, 211, 153)),
+                                        Stroke::new(2.0_f32, Color32::from_rgb(52, 211, 153)),
                                     ));
                                     wp.text(
                                         Pos2::new(w_rect.left() + 8.0, w_rect.top() + 3.0),
@@ -9671,11 +9713,11 @@ FHWA HDS-5 : Washout={:.1} (P90={}) / {} clv | <=4m Cov={:.1}% | RDII={:.0}mm/h"
                                     }
                                     ip.add(egui::Shape::line(
                                         poly_mean,
-                                        Stroke::new(2.0, Color32::from_rgb(56, 189, 248)),
+                                        Stroke::new(2.0_f32, Color32::from_rgb(56, 189, 248)),
                                     ));
                                     ip.add(egui::Shape::line(
                                         poly_max,
-                                        Stroke::new(2.0, Color32::from_rgb(244, 63, 94)),
+                                        Stroke::new(2.0_f32, Color32::from_rgb(244, 63, 94)),
                                     ));
                                     ip.text(
                                         Pos2::new(id_rect.left() + 8.0, id_rect.top() + 3.0),
@@ -9940,15 +9982,15 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     }
                                     tp.add(egui::Shape::line(
                                         poly_ntu,
-                                        Stroke::new(1.9, Color32::from_rgb(251, 146, 60)),
+                                        Stroke::new(1.9_f32, Color32::from_rgb(251, 146, 60)),
                                     ));
                                     tp.add(egui::Shape::line(
                                         poly_coag,
-                                        Stroke::new(1.7, Color32::from_rgb(250, 204, 21)),
+                                        Stroke::new(1.7_f32, Color32::from_rgb(250, 204, 21)),
                                     ));
                                     tp.add(egui::Shape::line(
                                         poly_stor,
-                                        Stroke::new(2.2, Color32::from_rgb(56, 189, 248)),
+                                        Stroke::new(2.2_f32, Color32::from_rgb(56, 189, 248)),
                                     ));
                                     tp.text(
                                         Pos2::new(t_rect.left() + 8.0, t_rect.top() + 3.0),
@@ -10723,7 +10765,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             } else {
                                 Color32::from_rgba_unmultiplied(52, 211, 153, 185)
                             };
-                            painter.line_segment([p0_s, p1_s], Stroke::new(3.4, col));
+                            painter.line_segment([p0_s, p1_s], Stroke::new(3.4_f32, col));
                             if self.cam_zoom >= 0.30 {
                                 let m_scr = world_to_screen(b.midpoint.x, b.midpoint.y);
                                 label_placer.place_badge(
@@ -10759,7 +10801,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 painter.line_segment(
                                     [p0_s, p1_s],
                                     Stroke::new(
-                                        3.2,
+                                        3.2_f32,
                                         Color32::from_rgba_unmultiplied(
                                             244,
                                             63,
@@ -10800,7 +10842,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             s_scr,
                             (11.0 * self.cam_zoom as f32).clamp(8.0, 24.0),
                             Stroke::new(
-                                2.2,
+                                2.2_f32,
                                 Color32::from_rgba_unmultiplied(
                                     250,
                                     204,
@@ -10814,7 +10856,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 s_scr,
                                 (15.5 * self.cam_zoom as f32).clamp(11.5, 32.0),
                                 Stroke::new(
-                                    1.8,
+                                    1.8_f32,
                                     Color32::from_rgba_unmultiplied(56, 189, 248, 210),
                                 ),
                             );
@@ -10872,7 +10914,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                             Rect::from_two_pos(p0, p1).shrink(2.0),
                                             2.0,
                                             Stroke::new(
-                                                1.8,
+                                                1.8_f32,
                                                 Color32::from_rgba_unmultiplied(232, 121, 249, 215),
                                             ),
                                         );
@@ -10895,7 +10937,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                         r_scr,
                                         2.0,
                                         Stroke::new(
-                                            1.4,
+                                            1.4_f32,
                                             Color32::from_rgba_unmultiplied(250, 204, 21, 185),
                                         ),
                                     );
@@ -10950,7 +10992,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             painter.line_segment(
                                 [world_to_screen(p0.x, p0.y), world_to_screen(p1.x, p1.y)],
                                 Stroke::new(
-                                    2.0,
+                                    2.0_f32,
                                     Color32::from_rgba_unmultiplied(250, 204, 21, 190),
                                 ),
                             );
@@ -10959,7 +11001,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             painter.line_segment(
                                 [world_to_screen(p0.x, p0.y), world_to_screen(p1.x, p1.y)],
                                 Stroke::new(
-                                    1.3,
+                                    1.3_f32,
                                     Color32::from_rgba_unmultiplied(56, 189, 248, 120),
                                 ),
                             );
@@ -10983,7 +11025,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     Color32::from_rgb(167, 243, 208)
                                 }
                             };
-                            painter.circle_stroke(scr, 11.5, Stroke::new(2.3, fcol));
+                            painter.circle_stroke(scr, 11.5, Stroke::new(2.3_f32, fcol));
                             painter.text(
                                 Pos2::new(scr.x, scr.y - 13.5),
                                 egui::Align2::CENTER_BOTTOM,
@@ -11018,7 +11060,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             painter.line_segment(
                                 [world_to_screen(p0.x, p0.y), world_to_screen(p1.x, p1.y)],
                                 Stroke::new(
-                                    2.1,
+                                    2.1_f32,
                                     Color32::from_rgba_unmultiplied(56, 189, 248, 185),
                                 ),
                             );
@@ -11044,7 +11086,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     }
                                 }
                             };
-                            painter.circle_stroke(scr, 12.0, Stroke::new(2.5, fcol));
+                            painter.circle_stroke(scr, 12.0, Stroke::new(2.5_f32, fcol));
                             let bwa_tag = if fr.bwa_triggered { " BWA!" } else { "" };
                             painter.text(
                                 Pos2::new(scr.x, scr.y - 14.0),
@@ -11093,8 +11135,8 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 }
                                 UsgsCombinedHazardRating::Low => Color32::from_rgb(52, 211, 153),
                             };
-                            painter.line_segment([p0, p1], Stroke::new(2.7, bcol));
-                            painter.circle_stroke(p0, 9.5, Stroke::new(2.0, bcol));
+                            painter.line_segment([p0, p1], Stroke::new(2.7_f32, bcol));
+                            painter.circle_stroke(p0, 9.5, Stroke::new(2.0_f32, bcol));
                             painter.text(
                                 Pos2::new(p0.x, p0.y - 11.5),
                                 egui::Align2::CENTER_BOTTOM,
@@ -11124,7 +11166,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     Color32::from_rgb(52, 211, 153)
                                 }
                             };
-                            painter.circle_stroke(c_scr, 11.5, Stroke::new(2.5, ccol));
+                            painter.circle_stroke(c_scr, 11.5, Stroke::new(2.5_f32, ccol));
                             painter.text(
                                 Pos2::new(c_scr.x, c_scr.y - 13.5),
                                 egui::Align2::CENTER_BOTTOM,
@@ -11166,7 +11208,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             painter.line_segment(
                                 [world_to_screen(c0.x, c0.y), world_to_screen(c1.x, c1.y)],
                                 Stroke::new(
-                                    1.9,
+                                    1.9_f32,
                                     Color32::from_rgba_unmultiplied(56, 189, 248, alpha),
                                 ),
                             );
@@ -11176,7 +11218,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                         for &(r0, r1) in &wrep.retardant_drop_segments {
                             painter.line_segment(
                                 [world_to_screen(r0.x, r0.y), world_to_screen(r1.x, r1.y)],
-                                Stroke::new(4.2, Color32::from_rgb(244, 63, 94)),
+                                Stroke::new(4.2_f32, Color32::from_rgb(244, 63, 94)),
                             );
                         }
 
@@ -11184,7 +11226,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                         for &(h0, h1) in &wrep.handcrew_dozer_segments {
                             painter.line_segment(
                                 [world_to_screen(h0.x, h0.y), world_to_screen(h1.x, h1.y)],
-                                Stroke::new(3.0, Color32::from_rgb(52, 211, 153)),
+                                Stroke::new(3.0_f32, Color32::from_rgb(52, 211, 153)),
                             );
                         }
 
@@ -11198,7 +11240,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                         painter.circle_stroke(
                             ign_scr,
                             cep_px,
-                            Stroke::new(2.2, Color32::from_rgb(250, 204, 21)),
+                            Stroke::new(2.2_f32, Color32::from_rgb(250, 204, 21)),
                         );
                         painter.text(
                             Pos2::new(ign_scr.x, ign_scr.y - cep_px - 3.0),
@@ -11222,7 +11264,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     Color32::from_rgb(52, 211, 153)
                                 }
                             };
-                            painter.circle_stroke(c_scr, 11.5, Stroke::new(2.4, ccol));
+                            painter.circle_stroke(c_scr, 11.5, Stroke::new(2.4_f32, ccol));
                             let shk = if cam.co_located_pnsn_shakealert { "+SA" } else { "" };
                             painter.text(
                                 Pos2::new(c_scr.x, c_scr.y - 13.5),
@@ -11272,7 +11314,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 } else {
                                     Color32::from_rgba_unmultiplied(244, 63, 94, 215)
                                 };
-                                painter.add(egui::Shape::line(pts, Stroke::new(2.8, scol)));
+                                painter.add(egui::Shape::line(pts, Stroke::new(2.8_f32, scol)));
                             }
                         }
 
@@ -11301,7 +11343,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             painter.rect_stroke(
                                 rect,
                                 2.0,
-                                Stroke::new(1.3, gcol),
+                                Stroke::new(1.3_f32, gcol),
                             );
                             let c_scr = world_to_screen(gr.center.x, gr.center.y);
                             painter.text(
@@ -11323,7 +11365,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                         painter.circle_stroke(
                             boo_scr,
                             14.0,
-                            Stroke::new(2.7, Color32::from_rgb(56, 189, 248)),
+                            Stroke::new(2.7_f32, Color32::from_rgb(56, 189, 248)),
                         );
                         painter.text(
                             Pos2::new(boo_scr.x, boo_scr.y - 16.0),
@@ -11338,7 +11380,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             painter.circle_stroke(
                                 p_scr,
                                 10.0,
-                                Stroke::new(2.1, Color32::from_rgb(250, 204, 21)),
+                                Stroke::new(2.1_f32, Color32::from_rgb(250, 204, 21)),
                             );
                             painter.text(
                                 Pos2::new(p_scr.x, p_scr.y + 12.0),
@@ -11376,7 +11418,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             painter.line_segment(
                                 [s0, s1],
                                 Stroke::new(
-                                    1.2,
+                                    1.2_f32,
                                     Color32::from_rgba_unmultiplied(56, 189, 248, 115),
                                 ),
                             );
@@ -11389,7 +11431,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             painter.line_segment(
                                 [s0, s1],
                                 Stroke::new(
-                                    2.3,
+                                    2.3_f32,
                                     Color32::from_rgba_unmultiplied(250, 204, 21, 205),
                                 ),
                             );
@@ -11399,7 +11441,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                         painter.circle_stroke(
                             isb_scr,
                             15.0,
-                            Stroke::new(2.8, Color32::from_rgb(250, 204, 21)),
+                            Stroke::new(2.8_f32, Color32::from_rgb(250, 204, 21)),
                         );
                         painter.text(
                             Pos2::new(isb_scr.x, isb_scr.y - 17.0),
@@ -11413,7 +11455,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                         painter.circle_stroke(
                             csa_scr,
                             12.0,
-                            Stroke::new(2.3, Color32::from_rgb(56, 189, 248)),
+                            Stroke::new(2.3_f32, Color32::from_rgb(56, 189, 248)),
                         );
                         painter.text(
                             Pos2::new(csa_scr.x, csa_scr.y - 14.0),
@@ -11437,13 +11479,13 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     scr,
                                     (14.0 + (pr.peak_spillback_vehs as f32) * 0.22).clamp(15.0, 42.0),
                                     Stroke::new(
-                                        1.8,
+                                        1.8_f32,
                                         Color32::from_rgba_unmultiplied(244, 63, 94, 175),
                                     ),
                                 );
                             }
                             let _ = FemaPodClassification::TypeIMetroFourLane;
-                            painter.circle_stroke(scr, 12.0, Stroke::new(2.5, pcol));
+                            painter.circle_stroke(scr, 12.0, Stroke::new(2.5_f32, pcol));
                             painter.text(
                                 Pos2::new(scr.x, scr.y - 14.0),
                                 egui::Align2::CENTER_BOTTOM,
@@ -11484,7 +11526,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             painter.line_segment(
                                 [s0, s1],
                                 Stroke::new(
-                                    2.2,
+                                    2.2_f32,
                                     Color32::from_rgba_unmultiplied(52, 211, 153, 210),
                                 ),
                             );
@@ -11521,12 +11563,12 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     scr,
                                     r_px,
                                     Stroke::new(
-                                        1.6,
+                                        1.6_f32,
                                         Color32::from_rgba_unmultiplied(52, 211, 153, 145),
                                     ),
                                 );
                             }
-                            painter.circle_stroke(scr, 12.0, Stroke::new(2.5, acol));
+                            painter.circle_stroke(scr, 12.0, Stroke::new(2.5_f32, acol));
                             painter.text(
                                 Pos2::new(scr.x, scr.y - 14.0),
                                 egui::Align2::CENTER_BOTTOM,
@@ -11569,7 +11611,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     s_scr,
                                     r_px,
                                     Stroke::new(
-                                        1.5,
+                                        1.5_f32,
                                         Color32::from_rgba_unmultiplied(250, 204, 21, 145),
                                     ),
                                 );
@@ -11590,7 +11632,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             painter.line_segment(
                                 [s0, s1],
                                 Stroke::new(
-                                    2.1,
+                                    2.1_f32,
                                     Color32::from_rgba_unmultiplied(52, 211, 153, 200),
                                 ),
                             );
@@ -11606,7 +11648,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             } else {
                                 Color32::from_rgb(244, 63, 94)
                             };
-                            painter.circle_stroke(t_scr, 12.0, Stroke::new(2.5, tcol));
+                            painter.circle_stroke(t_scr, 12.0, Stroke::new(2.5_f32, tcol));
                             painter.text(
                                 Pos2::new(t_scr.x, t_scr.y - 14.0),
                                 egui::Align2::CENTER_BOTTOM,
@@ -11652,7 +11694,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 } else {
                                     Color32::from_rgba_unmultiplied(45, 212, 191, 150)
                                 };
-                                painter.add(egui::Shape::line(pts, Stroke::new(2.6, lcol)));
+                                painter.add(egui::Shape::line(pts, Stroke::new(2.6_f32, lcol)));
                             }
                         }
 
@@ -11665,11 +11707,11 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             } else {
                                 Color32::from_rgba_unmultiplied(52, 211, 153, 205)
                             };
-                            painter.line_segment([p0, p1], Stroke::new(2.0, scol));
+                            painter.line_segment([p0, p1], Stroke::new(2.0_f32, scol));
                             painter.circle_stroke(
                                 p1,
                                 13.0,
-                                Stroke::new(2.3, Color32::from_rgb(56, 189, 248)),
+                                Stroke::new(2.3_f32, Color32::from_rgb(56, 189, 248)),
                             );
                         }
 
@@ -11686,7 +11728,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             } else {
                                 Color32::from_rgb(244, 63, 94)
                             };
-                            painter.circle_stroke(d_scr, 11.0, Stroke::new(2.4, dcol));
+                            painter.circle_stroke(d_scr, 11.0, Stroke::new(2.4_f32, dcol));
                             painter.text(
                                 Pos2::new(d_scr.x, d_scr.y - 13.0),
                                 egui::Align2::CENTER_BOTTOM,
@@ -11741,7 +11783,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 painter.add(egui::Shape::line(
                                     pts,
                                     Stroke::new(
-                                        if tour.via_helicopter_airdrop { 2.4 } else { 1.85 },
+                                        if tour.via_helicopter_airdrop { 2.4 } else { 1.85_f32 },
                                         t_col,
                                     ),
                                 ));
@@ -11754,7 +11796,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                         painter.circle_stroke(
                             dep_scr,
                             15.0,
-                            Stroke::new(2.8, Color32::from_rgb(250, 204, 21)),
+                            Stroke::new(2.8_f32, Color32::from_rgb(250, 204, 21)),
                         );
                         painter.text(
                             Pos2::new(dep_scr.x, dep_scr.y - 17.0),
@@ -11774,7 +11816,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             } else {
                                 Color32::from_rgb(244, 63, 94)
                             };
-                            painter.circle_stroke(s_scr, 12.0, Stroke::new(2.3, scol));
+                            painter.circle_stroke(s_scr, 12.0, Stroke::new(2.3_f32, scol));
                             painter.text(
                                 Pos2::new(s_scr.x, s_scr.y - 14.0),
                                 egui::Align2::CENTER_BOTTOM,
@@ -11817,7 +11859,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     } else {
                                         Color32::from_rgba_unmultiplied(251, 146, 60, 130)
                                     };
-                                    painter.line_segment([p_scr, s_scr], Stroke::new(1.25, line_col));
+                                    painter.line_segment([p_scr, s_scr], Stroke::new(1.25_f32, line_col));
                                 }
                             }
                         }
@@ -11833,7 +11875,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             } else {
                                 Color32::from_rgb(244, 63, 94)
                             };
-                            painter.circle_stroke(s_scr, 13.5, Stroke::new(2.5, sh_col));
+                            painter.circle_stroke(s_scr, 13.5, Stroke::new(2.5_f32, sh_col));
                             painter.text(
                                 s_scr,
                                 egui::Align2::CENTER_CENTER,
@@ -11868,18 +11910,18 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             if cr.thermal_closure_prob_pct >= 35.0 {
                                 painter.line_segment(
                                     [p0, p1],
-                                    Stroke::new(3.0, Color32::from_rgb(244, 63, 94)),
+                                    Stroke::new(3.0_f32, Color32::from_rgb(244, 63, 94)),
                                 );
                             } else if cr.contraflow_added_lanes > 0 {
                                 painter.line_segment(
                                     [p0, p1],
-                                    Stroke::new(2.8, Color32::from_rgb(56, 189, 248)),
+                                    Stroke::new(2.8_f32, Color32::from_rgb(56, 189, 248)),
                                 );
                             } else if cr.protected_ems_lz_corridor && cr.remaining_inbound_lanes >= 1 {
                                 painter.line_segment(
                                     [p0, p1],
                                     Stroke::new(
-                                        1.9,
+                                        1.9_f32,
                                         Color32::from_rgba_unmultiplied(52, 211, 153, 185),
                                     ),
                                 );
@@ -11993,7 +12035,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 } else {
                                     Color32::from_rgba_unmultiplied(251, 146, 60, 175)
                                 };
-                                painter.add(egui::Shape::line(curve_pts, Stroke::new(2.0, arc_col)));
+                                painter.add(egui::Shape::line(curve_pts, Stroke::new(2.0_f32, arc_col)));
                             }
                         }
 
@@ -12009,7 +12051,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             } else {
                                 Color32::from_rgb(244, 63, 94)
                             };
-                            painter.circle_stroke(h_scr, 13.0, Stroke::new(2.4, pad_col));
+                            painter.circle_stroke(h_scr, 13.0, Stroke::new(2.4_f32, pad_col));
                             painter.text(
                                 h_scr,
                                 egui::Align2::CENTER_CENTER,
@@ -12062,7 +12104,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     painter.line_segment(
                                         [p_scr, h_scr],
                                         Stroke::new(
-                                            1.35,
+                                            1.35_f32,
                                             Color32::from_rgba_unmultiplied(56, 189, 248, 135),
                                         ),
                                     );
@@ -12081,7 +12123,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             } else {
                                 Color32::from_rgb(52, 211, 153)
                             };
-                            painter.circle_stroke(h_scr, 14.0, Stroke::new(2.6, ring_col));
+                            painter.circle_stroke(h_scr, 14.0, Stroke::new(2.6_f32, ring_col));
                             let div_tag = if hr.time_on_diversion_pct >= 25.0 {
                                 " DIVERT"
                             } else {
@@ -12128,7 +12170,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     painter.circle_stroke(
                                         p_scr,
                                         rad,
-                                        Stroke::new(2.0, Color32::from_rgb(251, 146, 60)),
+                                        Stroke::new(2.0_f32, Color32::from_rgb(251, 146, 60)),
                                     );
                                     if r.dry_hydrant_prob_pct >= 40.0 {
                                         painter.text(
@@ -12169,7 +12211,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 }
                             }
                         };
-                        painter.circle_stroke(a_scr, 11.0, Stroke::new(2.3, ring_col));
+                        painter.circle_stroke(a_scr, 11.0, Stroke::new(2.3_f32, ring_col));
                         let status_sfx = if !asset.online {
                             ":OFF"
                         } else if asset.on_backup_power {
@@ -12195,7 +12237,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                         painter.circle_stroke(
                             world_to_screen(sel_j.pos.x, sel_j.pos.y),
                             (9.0 * self.cam_zoom as f32).clamp(6.0, 26.0),
-                            Stroke::new(1.6, Color32::from_rgba_unmultiplied(56, 189, 248, 175)),
+                            Stroke::new(1.6_f32, Color32::from_rgba_unmultiplied(56, 189, 248, 175)),
                         );
                     }
                 }
@@ -12212,7 +12254,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 SnapTarget::SplitSegment { .. } => Color32::from_rgb(250, 204, 21),
                                 SnapTarget::FreePoint { .. } => Color32::from_rgb(56, 189, 248),
                             };
-                            painter.circle_stroke(sp_scr, 9.0, Stroke::new(2.2, snap_col));
+                            painter.circle_stroke(sp_scr, 9.0, Stroke::new(2.2_f32, snap_col));
 
                             if let Some(orig) = self.draw_start_world {
                                 let o_scr = world_to_screen(orig.x, orig.y);
@@ -12233,7 +12275,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 );
                                 painter.line_segment(
                                     [o_scr, sp_scr],
-                                    Stroke::new(2.0, snap_col),
+                                    Stroke::new(2.0_f32, snap_col),
                                 );
                                 let mid = Pos2::new(
                                     0.5 * (o_scr.x + sp_scr.x),
@@ -12261,7 +12303,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 painter.add(egui::Shape::line(
                                     pts,
                                     Stroke::new(
-                                        3.2,
+                                        3.2_f32,
                                         Color32::from_rgba_unmultiplied(250, 204, 21, 225),
                                     ),
                                 ));
@@ -12287,11 +12329,11 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 };
                                 let c_scr = world_to_screen(j.pos.x, j.pos.y);
                                 let r_px = (self.roundabout_radius_m * self.cam_zoom).max(10.0) as f32;
-                                painter.circle_stroke(c_scr, r_px, Stroke::new(2.4, c));
+                                painter.circle_stroke(c_scr, r_px, Stroke::new(2.4_f32, c));
                                 painter.circle_stroke(
                                     c_scr,
                                     (r_px * 0.45).max(4.0),
-                                    Stroke::new(1.4, Color32::from_rgba_unmultiplied(148, 163, 184, 180)),
+                                    Stroke::new(1.4_f32, Color32::from_rgba_unmultiplied(148, 163, 184, 180)),
                                 );
                                 painter.text(
                                     Pos2::new(c_scr.x, c_scr.y - r_px - 6.0),
@@ -12311,7 +12353,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                 EmergencyFacilityKind::Hospital => Color32::from_rgb(56, 189, 248),
                             };
                             let cur_scr = world_to_screen(hwx, hwy);
-                            painter.circle_stroke(cur_scr, 12.0, Stroke::new(2.2, c));
+                            painter.circle_stroke(cur_scr, 12.0, Stroke::new(2.2_f32, c));
                             painter.text(
                                 Pos2::new(cur_scr.x, cur_scr.y - 15.0),
                                 egui::Align2::CENTER_BOTTOM,
@@ -12332,7 +12374,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                                     Color32::from_rgb(244, 63, 94)
                                 };
                                 let act = if seg.closed { "Reopen" } else { "Close" };
-                                painter.circle_stroke(p_scr, 13.0, Stroke::new(2.4, col));
+                                painter.circle_stroke(p_scr, 13.0, Stroke::new(2.4_f32, col));
                                 painter.text(
                                     Pos2::new(p_scr.x, p_scr.y - 16.0),
                                     egui::Align2::CENTER_BOTTOM,
@@ -12402,7 +12444,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                     painter.rect_stroke(
                         cb_rect,
                         6.0,
-                        Stroke::new(1.0, Color32::from_rgb(51, 65, 85)),
+                        Stroke::new(1.0_f32, Color32::from_rgb(51, 65, 85)),
                     );
                     painter.text(
                         Pos2::new(cb_rect.left() + 8.0, cb_rect.top() + 5.0),
@@ -12430,7 +12472,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                     painter.rect_stroke(
                         bar_rect,
                         1.0,
-                        Stroke::new(0.8, Color32::from_rgb(100, 116, 139)),
+                        Stroke::new(0.8_f32, Color32::from_rgb(100, 116, 139)),
                     );
                     let x_240 = bar_rect.left() + (240.0 / 360.0) * bar_rect.width();
                     painter.line_segment(
@@ -12438,7 +12480,7 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                             Pos2::new(x_240, bar_rect.top() - 2.0),
                             Pos2::new(x_240, bar_rect.bottom() + 2.0),
                         ],
-                        Stroke::new(1.6, Color32::from_rgb(236, 254, 255)),
+                        Stroke::new(1.6_f32, Color32::from_rgb(236, 254, 255)),
                     );
                     for (frac, lbl, align) in [
                         (0.0f32, "0 s", egui::Align2::LEFT_TOP),
@@ -12980,5 +13022,131 @@ mod tests {
             assert!(!out.shapes.is_empty());
         }
         assert!(app.about_open);
+
+        let esc_out = ctx.run(
+            egui::RawInput {
+                time: Some(0.3),
+                screen_rect: Some(Rect::from_min_size(
+                    Pos2::ZERO,
+                    EguiVec2::new(1440.0, 900.0),
+                )),
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            |c| {
+                app.ui_step(c);
+            },
+        );
+        assert!(!esc_out.shapes.is_empty());
+        assert!(!app.about_open);
+    }
+
+    #[test]
+    fn test_load_snapshot_clears_draw_start_and_cached_reports() {
+        let osm = parse_osm_xml_str(&builtin_riverfront_bridges_osm()).unwrap();
+        let world = SimulationWorld::new(RoadNetwork::compile(&osm));
+        let mut app = UrbanGridGuiApp::new_with_wgpu_state(None, world);
+
+        app.draw_start_world = Some(WorldVec2 { x: 12.5, y: -48.0 });
+        let srep = app.world.run_resilience_stress_test(&app.stress_cfg);
+        app.latest_stress_report = Some(srep);
+        assert!(app.draw_start_world.is_some());
+        assert!(app.latest_stress_report.is_some());
+
+        let snap_path = std::env::temp_dir().join("ug_gui_load_snapshot_clears_cache_test.json");
+        app.world
+            .save_snapshot_json(&snap_path, app.plume_params, "GUI Cache Clear Test", false)
+            .expect("save temp snapshot");
+
+        let loaded = app.load_snapshot_from_path(&snap_path.to_string_lossy());
+        let _ = std::fs::remove_file(&snap_path);
+
+        assert!(loaded);
+        assert!(app.draw_start_world.is_none());
+        assert!(app.latest_stress_report.is_none());
+    }
+
+    #[test]
+    fn test_command_palette_escape_priority_and_enter_launch() {
+        let osm = parse_osm_xml_str(&builtin_riverfront_bridges_osm()).unwrap();
+        let world = SimulationWorld::new(RoadNetwork::compile(&osm));
+        let mut app = UrbanGridGuiApp::new_with_wgpu_state(None, world);
+        let ctx = egui::Context::default();
+        let rect = Some(Rect::from_min_size(
+            Pos2::ZERO,
+            EguiVec2::new(1440.0, 900.0),
+        ));
+
+        app.about_open = true;
+        app.command_palette_open = true;
+        app.command_palette_just_opened = true;
+        app.command_palette_query = "ipaws".to_string();
+
+        // First Escape closes About first, leaving Command Palette open.
+        let _ = ctx.run(
+            egui::RawInput {
+                time: Some(0.1),
+                screen_rect: rect,
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            |c| app.ui_step(c),
+        );
+        assert!(!app.about_open);
+        assert!(app.command_palette_open);
+        assert!(!app.command_palette_just_opened);
+
+        // Second Escape closes the Command Palette when About is closed.
+        let _ = ctx.run(
+            egui::RawInput {
+                time: Some(0.15),
+                screen_rect: rect,
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            |c| app.ui_step(c),
+        );
+        assert!(!app.command_palette_open);
+
+        // Re-open with query and press Enter to launch the top matching module (`FEMA IPAWS & MERS`).
+        app.command_palette_open = true;
+        app.command_palette_just_opened = true;
+        let _ = ctx.run(
+            egui::RawInput {
+                time: Some(0.2),
+                screen_rect: rect,
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            |c| app.ui_step(c),
+        );
+        assert!(!app.command_palette_open);
+        assert!(app.screen == GuiScreen::ActiveWorkbench);
+        assert!(app.tab == DockTab::ResilienceStress);
+        assert!(app.stress_sub_mode == StressSubMode::FemaCommsArchitecture);
     }
 }

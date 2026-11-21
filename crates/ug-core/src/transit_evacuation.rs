@@ -436,7 +436,6 @@ impl TransitEvacuationReport {
 
 #[derive(Clone)]
 struct CandidatePickupDepot {
-    depot_id: usize,
     gtfs_stop_id: String,
     name: String,
     segment_id: usize,
@@ -578,11 +577,9 @@ fn select_gtfs_pickup_depots(
 
     chosen_indices
         .into_iter()
-        .enumerate()
-        .map(|(k, pi)| {
+        .map(|pi| {
             let (gid, nm, sid, pos, rc) = &pool[pi];
             CandidatePickupDepot {
-                depot_id: k,
                 gtfs_stop_id: gid.clone(),
                 name: nm.clone(),
                 segment_id: *sid,
