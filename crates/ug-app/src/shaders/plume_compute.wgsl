@@ -189,8 +189,8 @@ fn cs_advect_diffuse(@builtin(global_invocation_id) gid: vec3<u32>) {
         next_val = inject_sum * params.source_gain * 0.45;
     } else {
         let cell_m = max(params.world_span / f32(GRID_DIM), vec2<f32>(0.5, 0.5));
-        // Semi-Lagrangian upwind departure point back-trace (`x_dep = x - u * dt`)
-        let wind_scale = select(0.35, 1.0, mode == 3u);
+        // Mode 3 (`VspEmissions`) advects with prevailing wind; Mode 4 (`AgentDensity`) zeroes wind drift
+        let wind_scale = select(0.0, 1.0, mode == 3u);
         let dep_x = f32(ix) - (params.wind_mps.x * wind_scale * dt) / cell_m.x;
         let dep_y = f32(iy) - (params.wind_mps.y * wind_scale * dt) / cell_m.y;
 
@@ -201,7 +201,10 @@ fn cs_advect_diffuse(@builtin(global_invocation_id) gid: vec3<u32>) {
         let c_d = sample_src_bilinear(dep_x, dep_y + 1.0);
         let lap_avg = 0.25 * (c_l + c_r + c_u + c_d);
 
-        let diff_w = clamp(params.diffusivity, 0.02, 0.95) * 0.58;
+        // Physical 2D explicit 5-point stencil diffusion weight `4 * K * dt / dx^2`, CFL-clamped below 1.0
+        let eddy_k_m2s = max(params.diffusivity, 0.01) * 140.0;
+        let dx2 = max(0.5 * (cell_m.x * cell_m.x + cell_m.y * cell_m.y), 1.0);
+        let diff_w = clamp(4.0 * eddy_k_m2s * dt / dx2, 0.0, 0.94);
         let advected = mix(c_mid, lap_avg, diff_w);
         let decay = exp(-max(params.decay_rate, 0.05) * dt);
 

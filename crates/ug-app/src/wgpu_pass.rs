@@ -34,9 +34,13 @@ pub struct ViewportFramePayload {
     pub plume_compute: Option<GpuPlumeComputeUniform>,
     pub road_quads: Vec<GpuRoadQuadInstance>,
     pub agents: Vec<GpuAgentInstance>,
-    /// Populated only for discrete parcel layers (`Zoning`, `Isochrone15Min`) when dirty;
+    /// Populated only for discrete parcel/static layers when dirty;
     /// dynamic `VspEmissions` and `AgentDensity` plumes execute 100% on GPU via `plume_compute.wgsl`.
     pub heatmap_rgba: Option<Vec<u8>>,
+    /// Normalized `[0..1]` scalar field matching `heatmap_rgba` for contour extraction without RGB luma distortion.
+    pub heatmap_scalar: Option<Vec<f32>>,
+    /// Recycled capacity-warm vectors swapped back after `queue.write_buffer` to avoid per-frame deep clones.
+    pub recycle_pool: Arc<Mutex<(Vec<GpuRoadQuadInstance>, Vec<GpuAgentInstance>)>>,
 }
 
 /// Persistent GPU buffers, ping-pong `@compute` storage fields, bilinear heatmap texture, and
@@ -47,16 +51,20 @@ pub struct UrbanViewportGpuResources {
     accum_atomic_buffer: wgpu::Buffer,
     plume_state_a: wgpu::Buffer,
     plume_state_b: wgpu::Buffer,
+    cpu_scalar_buffer: wgpu::Buffer,
     heatmap_texture: wgpu::Texture,
     heatmap_view: wgpu::TextureView,
     compute_bgl: wgpu::BindGroupLayout,
     compute_bg_a_to_b: wgpu::BindGroup,
     compute_bg_b_to_a: wgpu::BindGroup,
     ping_pong_flip: bool,
+    use_plume_scalar_buf: bool,
     cs_clear_pipeline: wgpu::ComputePipeline,
     cs_splat_pipeline: wgpu::ComputePipeline,
     cs_advect_pipeline: wgpu::ComputePipeline,
-    render_bind_group: wgpu::BindGroup,
+    render_bg_plume_a: wgpu::BindGroup,
+    render_bg_plume_b: wgpu::BindGroup,
+    render_bg_cpu: wgpu::BindGroup,
     heatmap_pipeline: wgpu::RenderPipeline,
     road_pipeline: wgpu::RenderPipeline,
     agent_pipeline: wgpu::RenderPipeline,
@@ -162,6 +170,13 @@ impl UrbanViewportGpuResources {
 
         let plume_state_b = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("urban_plume_state_b"),
+            size: (GRID_CELL_COUNT * size_of::<f32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let cpu_scalar_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urban_cpu_scalar_field"),
             size: (GRID_CELL_COUNT * size_of::<f32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -346,27 +361,46 @@ impl UrbanViewportGpuResources {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
-        let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("urban_viewport_bg"),
-            layout: &render_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: camera_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&heatmap_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&heatmap_sampler),
-                },
-            ],
-        });
+        let make_render_bg = |label: &str, scalar_buf: &wgpu::Buffer| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &render_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: camera_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&heatmap_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&heatmap_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: scalar_buf.as_entire_binding(),
+                    },
+                ],
+            })
+        };
+        let render_bg_plume_a = make_render_bg("urban_viewport_bg_plume_a", &plume_state_a);
+        let render_bg_plume_b = make_render_bg("urban_viewport_bg_plume_b", &plume_state_b);
+        let render_bg_cpu = make_render_bg("urban_viewport_bg_cpu", &cpu_scalar_buffer);
 
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -532,16 +566,20 @@ impl UrbanViewportGpuResources {
             accum_atomic_buffer,
             plume_state_a,
             plume_state_b,
+            cpu_scalar_buffer,
             heatmap_texture,
             heatmap_view,
             compute_bgl,
             compute_bg_a_to_b,
             compute_bg_b_to_a,
             ping_pong_flip: false,
+            use_plume_scalar_buf: false,
             cs_clear_pipeline,
             cs_splat_pipeline,
             cs_advect_pipeline,
-            render_bind_group,
+            render_bg_plume_a,
+            render_bg_plume_b,
+            render_bg_cpu,
             heatmap_pipeline,
             road_pipeline,
             agent_pipeline,
@@ -560,12 +598,13 @@ impl UrbanViewportGpuResources {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        frame: &ViewportFramePayload,
+        frame: &mut ViewportFramePayload,
     ) {
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&frame.camera));
         self.heatmap_enabled = frame.camera.heatmap_mode != 0;
+        self.use_plume_scalar_buf = matches!(frame.camera.heatmap_mode, 3 | 4);
 
-        // Upload discrete CPU textures ONLY for static parcel Zoning / Isochrone overlays
+        // Upload discrete CPU textures ONLY for static parcel / resilience overlays
         if let Some(rgba) = &frame.heatmap_rgba {
             let expected = (HEATMAP_BYTES_PER_ROW as usize) * HEATMAP_DIM;
             if rgba.len() == expected {
@@ -588,6 +627,11 @@ impl UrbanViewportGpuResources {
                         depth_or_array_layers: 1,
                     },
                 );
+            }
+        }
+        if let Some(scalar) = &frame.heatmap_scalar {
+            if scalar.len() == GRID_CELL_COUNT {
+                queue.write_buffer(&self.cpu_scalar_buffer, 0, bytemuck::cast_slice(scalar));
             }
         }
 
@@ -676,6 +720,14 @@ impl UrbanViewportGpuResources {
 
             self.ping_pong_flip = !self.ping_pong_flip;
         }
+
+        // Return capacity-warm instance vectors to GUI recycle pool after `queue.write_buffer` staging
+        if let Ok(mut pool) = frame.recycle_pool.lock() {
+            frame.road_quads.clear();
+            frame.agents.clear();
+            pool.0 = std::mem::take(&mut frame.road_quads);
+            pool.1 = std::mem::take(&mut frame.agents);
+        }
     }
 }
 
@@ -696,8 +748,8 @@ impl egui_wgpu::CallbackTrait for UrbanViewportPaintCallback {
             return Vec::new();
         };
         if let Ok(mut guard) = self.payload.lock() {
-            if let Some(frame) = guard.take() {
-                gpu.upload_and_dispatch_compute(device, queue, egui_encoder, &frame);
+            if let Some(mut frame) = guard.take() {
+                gpu.upload_and_dispatch_compute(device, queue, egui_encoder, &mut frame);
             }
         }
         Vec::new()
@@ -713,7 +765,16 @@ impl egui_wgpu::CallbackTrait for UrbanViewportPaintCallback {
             return;
         };
 
-        render_pass.set_bind_group(0, &gpu.render_bind_group, &[]);
+        let active_bg = if gpu.use_plume_scalar_buf {
+            if gpu.ping_pong_flip {
+                &gpu.render_bg_plume_b
+            } else {
+                &gpu.render_bg_plume_a
+            }
+        } else {
+            &gpu.render_bg_cpu
+        };
+        render_pass.set_bind_group(0, active_bg, &[]);
 
         if gpu.heatmap_enabled {
             render_pass.set_pipeline(&gpu.heatmap_pipeline);

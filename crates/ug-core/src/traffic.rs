@@ -192,7 +192,7 @@ pub struct SimulationWorld {
     pub segment_fire_travel_s: Vec<f64>,
     pub segment_hospital_travel_s: Vec<f64>,
     pub evp_corridor_segments: Vec<bool>,
-    pub siren_seg_s: Vec<Option<f64>>,
+    pub siren_seg_s: Vec<Vec<f64>>,
     pub idm: IdmParams,
     pub mobil: MobilParams,
     pub base_demand_per_lane_hr: f64,
@@ -279,7 +279,7 @@ impl SimulationWorld {
             segment_fire_travel_s: vec![120.0; n_segs],
             segment_hospital_travel_s: vec![180.0; n_segs],
             evp_corridor_segments: vec![false; n_segs],
-            siren_seg_s: vec![None; n_segs],
+            siren_seg_s: vec![Vec::new(); n_segs],
             idm: IdmParams::default(),
             mobil: MobilParams::default(),
             base_demand_per_lane_hr: 340.0,
@@ -370,7 +370,7 @@ impl SimulationWorld {
             transit_policy: snap.transit_policy,
             transit_gtfs: snap.transit_gtfs,
             evp_corridor_segments: vec![false; n_segs],
-            siren_seg_s: vec![None; n_segs],
+            siren_seg_s: vec![Vec::new(); n_segs],
             mp_config: snap.mp_config,
             mp_telemetry: MaxPressureTelemetry::default(),
             segment_fire_travel_s: vec![120.0; n_segs],
@@ -1495,26 +1495,35 @@ impl SimulationWorld {
                 continue;
             }
 
-            // Acoustic siren shoulder pull-over yielding for civilian vehicles ahead of an EmergencyResponder
+            // Acoustic siren shoulder pull-over yielding for civilian vehicles ahead of any EmergencyResponder
             let mut pulling_over = false;
             if self.evp_config.enabled && veh.v_class != VehicleClass::EmergencyResponder {
                 if let CarrierRef::Lane(lid) = veh.carrier {
                     let sid = self.network.lanes[lid].segment_id;
-                    if let Some(ev_s) = self.siren_seg_s.get(sid).copied().flatten() {
-                        let ahead_d = veh.s_m - ev_s;
-                        if (-10.0..=self.evp_config.siren_yield_radius_m).contains(&ahead_d) {
+                    if let Some(sirens) = self.siren_seg_s.get(sid) {
+                        if sirens.iter().any(|&ev_s| {
+                            let ahead_d = veh.s_m - ev_s;
+                            (-10.0..=self.evp_config.siren_yield_radius_m).contains(&ahead_d)
+                        }) {
                             pulling_over = true;
                         }
                     }
                 }
             }
 
-            let v_cap_pull = if pulling_over {
-                (veh.v + veh.acc * dt).clamp(0.0, 4.2)
+            let prev_v = veh.v;
+            let v_raw = (prev_v + veh.acc * dt).max(0.0);
+            let v_cap_pull = if pulling_over && v_raw > 4.2 {
+                // Cap yielding speed drop cleanly by physical IDM hard deceleration per step
+                let min_step_v = (prev_v - self.idm.hard_decel_mps2 * dt).max(4.2);
+                v_raw.min(min_step_v).max(0.0)
             } else {
-                (veh.v + veh.acc * dt).max(0.0)
+                v_raw
             };
-            let ds = 0.5 * (veh.v + v_cap_pull) * dt;
+            if pulling_over {
+                veh.acc = ((v_cap_pull - prev_v) / dt.max(1e-6)).max(-self.idm.hard_decel_mps2);
+            }
+            let ds = 0.5 * (prev_v + v_cap_pull) * dt;
             veh.v = v_cap_pull;
             veh.s_m += ds;
             if pulling_over {
@@ -2134,16 +2143,12 @@ impl SimulationWorld {
                         let is_ev = self.vehicles[vi].v_class == VehicleClass::EmergencyResponder;
                         let siren_nearby = !is_ev
                             && self.evp_config.enabled
-                            && self
-                                .siren_seg_s
-                                .get(sid)
-                                .copied()
-                                .flatten()
-                                .map(|ev_s| {
+                            && self.siren_seg_s.get(sid).map_or(false, |sirens| {
+                                sirens.iter().any(|&ev_s| {
                                     let d = veh_s - ev_s;
                                     (-12.0..=self.evp_config.siren_yield_radius_m).contains(&d)
                                 })
-                                .unwrap_or(false);
+                            });
 
                         // Civilian vehicles under siren alert strongly bias right (`target_li > li`) and never cut left (`target_li < li`)!
                         if siren_nearby && target_li < li {
@@ -2179,5 +2184,88 @@ impl SimulationWorld {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::RoadNetwork;
+    use crate::osm::{builtin_riverfront_bridges_osm, parse_osm_xml_str};
+
+    #[test]
+    fn multi_siren_per_segment_preserved_and_yielding_obeys_hard_decel() {
+        let osm = parse_osm_xml_str(&builtin_riverfront_bridges_osm()).expect("builtin osm");
+        let net = RoadNetwork::compile(&osm);
+        let mut world = SimulationWorld::new(net);
+
+        // Choose a long segment with multiple lanes if available
+        let seg_id = world
+            .network
+            .segments
+            .iter()
+            .position(|s| !s.closed && s.length > 120.0 && !s.lane_ids.is_empty())
+            .expect("long open segment");
+        let lane_id = *world.network.segments[seg_id].lane_ids.last().unwrap();
+        let seg_len = world.network.segments[seg_id].length;
+
+        world.vehicles.clear();
+        world.evp_config.enabled = true;
+        world.evp_config.siren_yield_radius_m = 60.0;
+
+        let make_veh = |id: u64, class: VehicleClass, s_m: f64, v: f64| Vehicle {
+            id,
+            v_class: class,
+            carrier: CarrierRef::Lane(lane_id),
+            s_m,
+            length_m: if class == VehicleClass::EmergencyResponder { 6.5 } else { 4.5 },
+            width_m: 2.0,
+            v_max_mps: 25.0,
+            accel_mult: 1.0,
+            v,
+            acc: 0.0,
+            lat_visual_offset_m: 0.0,
+            lc_cooldown_s: 0.0,
+            dest_seg_id: None,
+            planned_conn_id: None,
+            turn_intent: TurnType::Through,
+            spawn_time_s: 0.0,
+            gtfs_route_idx: None,
+            gtfs_route_seq: 0,
+            gtfs_next_stop_order: 0,
+            dwell_remaining_s: 0.0,
+            onboard_pax: 0,
+            crush_capacity: 0,
+        };
+
+        // Two sirens far apart on the same segment, plus a fast civilian car ahead of the second siren
+        let s1 = 10.0;
+        let s2 = (seg_len * 0.72).max(95.0).min(seg_len - 25.0);
+        let car_s = (s2 + 12.0).min(seg_len - 5.0);
+        world.vehicles.push(make_veh(1, VehicleClass::EmergencyResponder, s1, 14.0));
+        world.vehicles.push(make_veh(2, VehicleClass::EmergencyResponder, s2, 14.0));
+        world.vehicles.push(make_veh(3, VehicleClass::Sedan, car_s, 20.0));
+
+        let dt = 0.05;
+        let prev_v = 20.0;
+        world.step(dt);
+
+        // Both sirens must remain recorded on seg_id without overwriting one another
+        assert!(
+            world.siren_seg_s[seg_id].len() >= 2,
+            "Expected >= 2 siren entries on segment {seg_id}, got {:?}",
+            world.siren_seg_s[seg_id]
+        );
+        let car = world.vehicles.iter().find(|v| v.id == 3).expect("civilian car");
+        let observed_decel = (prev_v - car.v) / dt;
+        assert!(
+            observed_decel <= world.idm.hard_decel_mps2 + 1e-6,
+            "Yielding vehicle decel {observed_decel:.3} m/s^2 exceeded hard_decel_mps2 ({:.3})",
+            world.idm.hard_decel_mps2
+        );
+        assert!(
+            car.lat_visual_offset_m > 0.01,
+            "Car ahead of second siren must begin right-shoulder pull-over yield"
+        );
     }
 }

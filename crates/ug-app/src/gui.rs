@@ -61,7 +61,8 @@ use ug_core::{
     PipelineFragilityLaw, ResilienceStressConfig, ResilienceStressReport,
     sample_ala_hazus_pgv_curves, sample_hazus_restoration_curves, SeismicMonteCarloReport,
     SeismicScenarioConfig, pack_agents_into, pack_road_quads_into, parse_osm_xml_str, ControlMode,
-    GpuCameraUniform, BoardingFareMode, BusCoachSpec, GpuPlumeComputeUniform, GpuStagingArena,
+    GpuCameraUniform, BoardingFareMode, BusCoachSpec, GpuAgentInstance, GpuPlumeComputeUniform,
+    GpuRoadQuadInstance, GpuStagingArena,
     HeatmapLayer, adjust_segment_lane_count, convert_junction_to_roundabout, draw_road_segment,
     hit_test_junction, hit_test_segment, preview_draw_snap, MpPhaseId, NewRoadSpec,
     PlumePhysicsParams, RoadNetwork, SimulationWorld, SnapTarget, UtilityAssetKind,
@@ -234,7 +235,7 @@ impl LabelPlacer {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum ViewportTool {
     Inspect,
     DrawRoad,
@@ -502,6 +503,7 @@ pub struct UrbanGridGuiApp {
     command_palette_just_opened: bool,
     command_palette_query: String,
     show_cad_toolbar: bool,
+    gpu_recycle_pool: Arc<Mutex<(Vec<GpuRoadQuadInstance>, Vec<GpuAgentInstance>)>>,
 }
 
 impl UrbanGridGuiApp {
@@ -688,7 +690,19 @@ impl UrbanGridGuiApp {
             command_palette_just_opened: false,
             command_palette_query: String::new(),
             show_cad_toolbar: true,
+            gpu_recycle_pool: Arc::new(Mutex::new((
+                Vec::with_capacity(16_384),
+                Vec::with_capacity(65_536),
+            ))),
         }
+    }
+
+    fn fit_camera_to_network(&mut self) {
+        let b = self.world.network.bounds;
+        let span = (b.max_x - b.min_x).max(b.max_y - b.min_y).max(200.0);
+        self.cam_x = 0.5 * (b.min_x + b.max_x);
+        self.cam_y = 0.5 * (b.min_y + b.max_y);
+        self.cam_zoom = (760.0 / span).clamp(0.28, 2.2);
     }
 
     fn launch_background_sweep(&mut self) {
@@ -4292,7 +4306,7 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                         }
                         ui.separator();
                         ui.add(
-                            egui::Slider::new(&mut self.speed_scale, 0.25..=4.0)
+                            egui::Slider::new(&mut self.speed_scale, 0.25..=16.0)
                                 .text("Sim Speed Scale"),
                         );
                         ui.add(
@@ -10366,6 +10380,12 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                         self.draw_start_world = None;
                         self.layer = HeatmapLayer::EmergencyResponse4Min;
                         self.heatmap_dirty = true;
+                    } else if i.key_pressed(egui::Key::R) || i.key_pressed(egui::Key::Num0) {
+                        self.fit_camera_to_network();
+                    } else if i.key_pressed(egui::Key::OpenBracket) {
+                        self.speed_scale = (self.speed_scale * 0.5).clamp(0.25, 16.0);
+                    } else if i.key_pressed(egui::Key::CloseBracket) {
+                        self.speed_scale = (self.speed_scale * 2.0).clamp(0.25, 16.0);
                     } else if i.key_pressed(egui::Key::E) {
                         if let Some(ev_id) = self
                             .world
@@ -10596,65 +10616,89 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
             painter.rect_filled(rect, 0.0, Color32::from_rgb(8, 12, 21));
 
             if self.gpu_ready {
+                if let Ok(mut pool) = self.gpu_recycle_pool.lock() {
+                    if pool.0.capacity() >= self.staging.road_quads.capacity() {
+                        std::mem::swap(&mut self.staging.road_quads, &mut pool.0);
+                    }
+                    if pool.1.capacity() >= self.staging.agents.capacity() {
+                        std::mem::swap(&mut self.staging.agents, &mut pool.1);
+                    }
+                }
                 pack_road_quads_into(&self.world, &mut self.staging.road_quads);
                 pack_agents_into(&self.world, interp_dt, &mut self.staging.agents);
+                let packed_road_quad_count = self.staging.road_quads.len();
+                let packed_agent_count = self.staging.agents.len();
 
                 let is_gpu_compute_plume = matches!(
                     self.layer,
                     HeatmapLayer::VspEmissions | HeatmapLayer::AgentDensity
                 );
 
-                // Discrete parcel overlays (`Zoning`, `Isochrone15Min`) upload only when edited;
-                // `VspEmissions` & `AgentDensity` run 100% on GPU via `plume_compute.wgsl`!
-                let heatmap_rgba = if !is_gpu_compute_plume && self.heatmap_dirty {
+                // Discrete parcel / static layers upload only when edited;
+                // `VspEmissions` & `AgentDensity` run 100% on GPU via `plume_compute.wgsl`.
+                let (heatmap_rgba, heatmap_scalar) = if !is_gpu_compute_plume && self.heatmap_dirty
+                {
                     self.heatmap_dirty = false;
-                    let agents_snap = self.staging.agents.clone();
+                    let agents_tmp = std::mem::take(&mut self.staging.agents);
                     build_heatmap_rgba(
                         &self.world,
                         self.layer,
-                        &agents_snap,
+                        &agents_tmp,
                         &mut self.staging,
                     );
-                    Some(self.staging.heatmap_rgba.clone())
+                    self.staging.agents = agents_tmp;
+                    let has_scalar = !matches!(
+                        self.layer,
+                        HeatmapLayer::Off
+                            | HeatmapLayer::Zoning
+                            | HeatmapLayer::Isochrone15Min
+                            | HeatmapLayer::EmergencyResponse4Min
+                            | HeatmapLayer::ResponseDistricts
+                    );
+                    (
+                        Some(self.staging.heatmap_rgba.clone()),
+                        has_scalar.then(|| self.staging.heatmap_field_c.clone()),
+                    )
                 } else {
                     if is_gpu_compute_plume {
                         self.heatmap_dirty = false;
                     }
-                    None
+                    (None, None)
                 };
 
                 let b = self.world.network.bounds;
                 let span_x = (b.max_x - b.min_x).max(10.0) as f32;
                 let span_y = (b.max_y - b.min_y).max(10.0) as f32;
 
-                let plume_compute = if is_gpu_compute_plume {
-                    let mut mode_bits = self.layer as u32;
-                    if self.plume_reset_pending {
-                        mode_bits |= 256;
-                        self.plume_reset_pending = false;
-                    }
-                    let n_ag = self.staging.agents.len();
-                    let source_gain = if self.layer == HeatmapLayer::VspEmissions {
-                        if n_ag > 8_000 { 1.15 } else { 3.40 }
-                    } else if n_ag > 10_000 {
-                        0.85
+                // Skip GPU plume compute dispatch while paused (except one-shot reset splat on layer switch)
+                let plume_compute =
+                    if is_gpu_compute_plume && (!self.paused || self.plume_reset_pending) {
+                        let mut mode_bits = self.layer as u32;
+                        if self.plume_reset_pending {
+                            mode_bits |= 256;
+                            self.plume_reset_pending = false;
+                        }
+                        let source_gain = if self.layer == HeatmapLayer::VspEmissions {
+                            if packed_agent_count > 8_000 { 1.15 } else { 3.40 }
+                        } else if packed_agent_count > 10_000 {
+                            0.85
+                        } else {
+                            2.90
+                        };
+                        Some(GpuPlumeComputeUniform {
+                            world_min: [b.min_x as f32, b.min_y as f32],
+                            world_span: [span_x, span_y],
+                            wind_mps: [self.plume_params.wind_x_mps, self.plume_params.wind_y_mps],
+                            dt_s: if self.paused { 0.0 } else { dt_real as f32 },
+                            diffusivity: self.plume_params.diffusivity,
+                            decay_rate: self.plume_params.decay_rate,
+                            source_gain,
+                            agent_count: packed_agent_count as u32,
+                            mode_and_reset: mode_bits,
+                        })
                     } else {
-                        2.90
+                        None
                     };
-                    Some(GpuPlumeComputeUniform {
-                        world_min: [b.min_x as f32, b.min_y as f32],
-                        world_span: [span_x, span_y],
-                        wind_mps: [self.plume_params.wind_x_mps, self.plume_params.wind_y_mps],
-                        dt_s: if self.paused { 0.0 } else { dt_real as f32 },
-                        diffusivity: self.plume_params.diffusivity,
-                        decay_rate: self.plume_params.decay_rate,
-                        source_gain,
-                        agent_count: n_ag as u32,
-                        mode_and_reset: mode_bits,
-                    })
-                } else {
-                    None
-                };
 
                 let camera = GpuCameraUniform {
                     cam_center: [self.cam_x as f32, self.cam_y as f32],
@@ -10677,9 +10721,11 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                 let payload = ViewportFramePayload {
                     camera,
                     plume_compute,
-                    road_quads: self.staging.road_quads.clone(),
-                    agents: self.staging.agents.clone(),
+                    road_quads: std::mem::take(&mut self.staging.road_quads),
+                    agents: std::mem::take(&mut self.staging.agents),
                     heatmap_rgba,
+                    heatmap_scalar,
+                    recycle_pool: Arc::clone(&self.gpu_recycle_pool),
                 };
 
                 let cb = egui_wgpu::Callback::new_paint_callback(
@@ -10701,22 +10747,27 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                     Pos2::new(rect.left() + 12.0, rect.top() + 12.0),
                     EguiVec2::new(430.0, 28.0),
                 );
-                let ems_colorbar_rect = if self.layer == HeatmapLayer::EmergencyResponse4Min {
+                let active_colorbar_rect = if self.layer != HeatmapLayer::Off {
                     Some(Rect::from_min_size(
-                        Pos2::new(rect.left() + 12.0, rect.bottom() - 64.0),
-                        EguiVec2::new(274.0, 52.0),
+                        Pos2::new(rect.left() + 12.0, rect.bottom() - 66.0),
+                        EguiVec2::new(288.0, 54.0),
                     ))
                 } else {
                     None
                 };
+                let scale_rose_rect = Rect::from_min_size(
+                    Pos2::new(rect.right() - 188.0, rect.bottom() - 78.0),
+                    EguiVec2::new(176.0, 66.0),
+                );
 
                 let mut label_placer = LabelPlacer::new(rect);
                 label_placer.reserve(hud_rect);
+                label_placer.reserve(scale_rose_rect);
                 label_placer.reserve(Rect::from_min_size(
                     Pos2::new(rect.left() + 10.0, rect.top() + 34.0),
                     EguiVec2::new((rect.width() - 20.0).min(780.0), 34.0),
                 ));
-                if let Some(cb_rect) = ems_colorbar_rect {
+                if let Some(cb_rect) = active_colorbar_rect {
                     label_placer.reserve(cb_rect);
                 }
 
@@ -12399,8 +12450,8 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                     egui::Align2::LEFT_CENTER,
                     format!(
                         "wgpu @compute + Instanced  |  {} quads + {} SDF agents  |  {:.0} FPS ({:.2} ms)",
-                        self.staging.road_quads.len(),
-                        self.staging.agents.len(),
+                        packed_road_quad_count,
+                        packed_agent_count,
                         (1000.0 / self.ema_frame_ms.max(0.5)).min(999.0),
                         self.ema_frame_ms
                     ),
@@ -12435,73 +12486,20 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
                         );
                     }
                 }
-                if let Some(cb_rect) = ems_colorbar_rect {
-                    painter.rect_filled(
+                if let Some(cb_rect) = active_colorbar_rect {
+                    paint_active_heatmap_colorbar(
+                        &painter,
                         cb_rect,
-                        6.0,
-                        Color32::from_rgba_unmultiplied(15, 23, 42, 228),
+                        self.layer,
+                        self.world.utility_config.heatmap_sublayer,
                     );
-                    painter.rect_stroke(
-                        cb_rect,
-                        6.0,
-                        Stroke::new(1.0_f32, Color32::from_rgb(51, 65, 85)),
-                    );
-                    painter.text(
-                        Pos2::new(cb_rect.left() + 8.0, cb_rect.top() + 5.0),
-                        egui::Align2::LEFT_TOP,
-                        "EMS Response Time (0..360 s | NFPA 4m=240s)",
-                        egui::FontId::monospace(9.5),
-                        Color32::from_rgb(226, 232, 240),
-                    );
-                    let bar_rect = Rect::from_min_size(
-                        Pos2::new(cb_rect.left() + 10.0, cb_rect.top() + 21.0),
-                        EguiVec2::new(cb_rect.width() - 20.0, 11.0),
-                    );
-                    let steps = 48usize;
-                    for si in 0..steps {
-                        let u0 = si as f32 / steps as f32;
-                        let u1 = (si + 1) as f32 / steps as f32;
-                        let sec = 0.5 * (u0 + u1) * 360.0;
-                        let c = ug_core::response_time_4min_colormap(sec);
-                        let seg = Rect::from_min_max(
-                            Pos2::new(bar_rect.left() + u0 * bar_rect.width(), bar_rect.top()),
-                            Pos2::new(bar_rect.left() + u1 * bar_rect.width(), bar_rect.bottom()),
-                        );
-                        painter.rect_filled(seg, 0.0, Color32::from_rgb(c[0], c[1], c[2]));
-                    }
-                    painter.rect_stroke(
-                        bar_rect,
-                        1.0,
-                        Stroke::new(0.8_f32, Color32::from_rgb(100, 116, 139)),
-                    );
-                    let x_240 = bar_rect.left() + (240.0 / 360.0) * bar_rect.width();
-                    painter.line_segment(
-                        [
-                            Pos2::new(x_240, bar_rect.top() - 2.0),
-                            Pos2::new(x_240, bar_rect.bottom() + 2.0),
-                        ],
-                        Stroke::new(1.6_f32, Color32::from_rgb(236, 254, 255)),
-                    );
-                    for (frac, lbl, align) in [
-                        (0.0f32, "0 s", egui::Align2::LEFT_TOP),
-                        (120.0 / 360.0, "120 s", egui::Align2::CENTER_TOP),
-                        (240.0 / 360.0, "240 s", egui::Align2::CENTER_TOP),
-                        (1.0f32, "360 s+", egui::Align2::RIGHT_TOP),
-                    ] {
-                        let tx = bar_rect.left() + frac * bar_rect.width();
-                        painter.text(
-                            Pos2::new(tx, bar_rect.bottom() + 3.0),
-                            align,
-                            lbl,
-                            egui::FontId::monospace(9.0),
-                            if (frac - 240.0 / 360.0).abs() < 0.01 {
-                                Color32::from_rgb(236, 254, 255)
-                            } else {
-                                Color32::from_rgb(203, 213, 225)
-                            },
-                        );
-                    }
                 }
+                paint_metric_scale_and_wind_rose(
+                    &painter,
+                    scale_rose_rect,
+                    self.cam_zoom,
+                    self.plume_params,
+                );
             } else {
                 painter.text(
                     rect.center(),
@@ -12513,6 +12511,365 @@ Storage   : Min {:.1}% (P10 {:.1}%) | High-Zone {:.1} psi | P(BWA)={:.1}% ({:.0}
             }
         });
     }
+}
+
+fn heatmap_layer_legend_spec(
+    layer: HeatmapLayer,
+    util_sub: UtilityHeatmapSublayer,
+) -> (&'static str, &'static str, &'static str, &'static str) {
+    match layer {
+        HeatmapLayer::VspEmissions => ("VSP Emissions Plume", "0.0", "0.5", "1.0+ kW/t"),
+        HeatmapLayer::AgentDensity => ("Multimodal Agent Density", "0.0", "0.5", "1.0+ ag/cell"),
+        HeatmapLayer::UtilityLifelines => match util_sub {
+            UtilityHeatmapSublayer::CompositeLifelineHealth => {
+                ("Utility Lifeline Health", "0% Outage", "50% Sag", "100% Nom")
+            }
+            UtilityHeatmapSublayer::ElectricVoltagePu => {
+                ("12.47 kV Voltage", "0.85 p.u.", "0.95 p.u.", "1.05 p.u.")
+            }
+            UtilityHeatmapSublayer::WaterResidualPressurePsi => {
+                ("Potable Hydrant Pressure", "0 psi", "20 psi", "45+ psi")
+            }
+            UtilityHeatmapSublayer::WastewaterSewerLoading => {
+                ("Sewer Capacity Load", "1.05 d/D", "0.55 d/D", "0.0 d/D")
+            }
+        },
+        HeatmapLayer::FireFollowingQuake => ("FFE Conflagration Risk", "0%", "14%", "28%+ burn"),
+        HeatmapLayer::HospitalTraumaSurge => ("ED Golden-Hour Wait", "0 min", "45 min", "90+ min"),
+        HeatmapLayer::AeromedicalMedevac => ("Medevac Airlift Save", "0 min", "8 min", "15+ min"),
+        HeatmapLayer::EvacuationContraflow => ("Evac T90 Clearance", "0 min", "60 min", "120+ min"),
+        HeatmapLayer::EmergencyShelters => ("Clean-Air Shelter HEPA", "0%", "50%", "100% cov"),
+        HeatmapLayer::CommodityResupply => ("VRP Commodity Security", "0%", "50%", "100% sec"),
+        HeatmapLayer::TransitBusEvacuation => ("GTFS/ADA Evac Clearance", "0%", "50%", "100% clr"),
+        HeatmapLayer::WarningMobilization => ("60-Min Alert Mobilized", "0%", "50%", "100% mob"),
+        HeatmapLayer::FemaCommsArchitecture => ("IPAWS & ESF-2 Reach", "0%", "50%", "100% reach"),
+        HeatmapLayer::FemaIsbPods => ("C-POD Drive+Queue Access", "0 min", "30 min", "60+ min"),
+        HeatmapLayer::FemaUsarDebris => ("US&R Survival Rescue", "0%", "50%", "100% surv"),
+        HeatmapLayer::FemaGsbDrcTdms => ("ESF-3 Recovery Readiness", "0%", "50%", "100% rdy"),
+        HeatmapLayer::WildfireAlertWestResponse => ("ALERTWest PTZ Coverage", "0%", "50%", "100% det"),
+        HeatmapLayer::BurnScarDebrisFlow => ("Culvert & M1 Debris", "0.0 HW/D", "0.8 HW/D", "1.6+ HW/D"),
+        HeatmapLayer::WtpTurbidityStorage => ("WTP Source Ash / NTU", "0 NTU", "250 NTU", "500+ NTU"),
+        _ => ("Scalar Intensity Field", "0.0", "0.5", "1.0"),
+    }
+}
+
+fn paint_active_heatmap_colorbar(
+    painter: &egui::Painter,
+    cb_rect: Rect,
+    layer: HeatmapLayer,
+    util_sub: UtilityHeatmapSublayer,
+) {
+    if layer == HeatmapLayer::Off {
+        return;
+    }
+    painter.rect_filled(
+        cb_rect,
+        6.0,
+        Color32::from_rgba_unmultiplied(15, 23, 42, 228),
+    );
+    painter.rect_stroke(
+        cb_rect,
+        6.0,
+        Stroke::new(1.0_f32, Color32::from_rgb(51, 65, 85)),
+    );
+
+    match layer {
+        HeatmapLayer::EmergencyResponse4Min => {
+            painter.text(
+                Pos2::new(cb_rect.left() + 8.0, cb_rect.top() + 5.0),
+                egui::Align2::LEFT_TOP,
+                "EMS Response Time (0..360 s | NFPA 4m=240s)",
+                egui::FontId::monospace(9.5),
+                Color32::from_rgb(226, 232, 240),
+            );
+            let bar_rect = Rect::from_min_size(
+                Pos2::new(cb_rect.left() + 10.0, cb_rect.top() + 21.0),
+                EguiVec2::new(cb_rect.width() - 20.0, 11.0),
+            );
+            let steps = 48usize;
+            for si in 0..steps {
+                let u0 = si as f32 / steps as f32;
+                let u1 = (si + 1) as f32 / steps as f32;
+                let sec = 0.5 * (u0 + u1) * 360.0;
+                let c = ug_core::response_time_4min_colormap(sec);
+                let seg = Rect::from_min_max(
+                    Pos2::new(bar_rect.left() + u0 * bar_rect.width(), bar_rect.top()),
+                    Pos2::new(bar_rect.left() + u1 * bar_rect.width(), bar_rect.bottom()),
+                );
+                painter.rect_filled(seg, 0.0, Color32::from_rgb(c[0], c[1], c[2]));
+            }
+            painter.rect_stroke(
+                bar_rect,
+                1.0,
+                Stroke::new(0.8_f32, Color32::from_rgb(100, 116, 139)),
+            );
+            let x_240 = bar_rect.left() + (240.0 / 360.0) * bar_rect.width();
+            painter.line_segment(
+                [
+                    Pos2::new(x_240, bar_rect.top() - 2.0),
+                    Pos2::new(x_240, bar_rect.bottom() + 2.0),
+                ],
+                Stroke::new(1.6_f32, Color32::from_rgb(236, 254, 255)),
+            );
+            for (frac, lbl, align) in [
+                (0.0f32, "0 s", egui::Align2::LEFT_TOP),
+                (120.0 / 360.0, "120 s", egui::Align2::CENTER_TOP),
+                (240.0 / 360.0, "240 s", egui::Align2::CENTER_TOP),
+                (1.0f32, "360 s+", egui::Align2::RIGHT_TOP),
+            ] {
+                let tx = bar_rect.left() + frac * bar_rect.width();
+                painter.text(
+                    Pos2::new(tx, bar_rect.bottom() + 3.0),
+                    align,
+                    lbl,
+                    egui::FontId::monospace(9.0),
+                    if (frac - 240.0 / 360.0).abs() < 0.01 {
+                        Color32::from_rgb(236, 254, 255)
+                    } else {
+                        Color32::from_rgb(203, 213, 225)
+                    },
+                );
+            }
+        }
+        HeatmapLayer::Zoning => {
+            painter.text(
+                Pos2::new(cb_rect.left() + 8.0, cb_rect.top() + 5.0),
+                egui::Align2::LEFT_TOP,
+                "Parcel Zoning Land Use (FAR / Tax Yield)",
+                egui::FontId::monospace(9.5),
+                Color32::from_rgb(226, 232, 240),
+            );
+            let chips = [
+                ("R1", Color32::from_rgb(251, 191, 36)),
+                ("R3", Color32::from_rgb(251, 146, 60)),
+                ("MU4", Color32::from_rgb(192, 132, 252)),
+                ("CBD", Color32::from_rgb(56, 189, 248)),
+                ("IND", Color32::from_rgb(129, 140, 248)),
+                ("PARK", Color32::from_rgb(16, 185, 129)),
+            ];
+            let chip_w = (cb_rect.width() - 16.0) / chips.len() as f32;
+            for (ci, (lbl, col)) in chips.iter().enumerate() {
+                let cx = cb_rect.left() + 8.0 + ci as f32 * chip_w;
+                let sw = Rect::from_min_size(Pos2::new(cx + 2.0, cb_rect.top() + 21.0), EguiVec2::new(chip_w - 6.0, 10.0));
+                painter.rect_filled(sw, 2.0, *col);
+                painter.text(
+                    Pos2::new(sw.center().x, sw.bottom() + 3.0),
+                    egui::Align2::CENTER_TOP,
+                    *lbl,
+                    egui::FontId::monospace(8.5),
+                    Color32::from_rgb(203, 213, 225),
+                );
+            }
+        }
+        HeatmapLayer::Isochrone15Min => {
+            painter.text(
+                Pos2::new(cb_rect.left() + 8.0, cb_rect.top() + 5.0),
+                egui::Align2::LEFT_TOP,
+                "15-Min Multimodal Isochrone (min)",
+                egui::FontId::monospace(9.5),
+                Color32::from_rgb(226, 232, 240),
+            );
+            let bands = [
+                ("<=5m", Color32::from_rgb(16, 185, 129)),
+                ("<=10m", Color32::from_rgb(56, 189, 248)),
+                ("<=15m", Color32::from_rgb(250, 204, 21)),
+                (">15m", Color32::from_rgb(244, 63, 94)),
+            ];
+            let bw = (cb_rect.width() - 16.0) / bands.len() as f32;
+            for (bi, (lbl, col)) in bands.iter().enumerate() {
+                let bx = cb_rect.left() + 8.0 + bi as f32 * bw;
+                let sw = Rect::from_min_size(Pos2::new(bx + 2.0, cb_rect.top() + 21.0), EguiVec2::new(bw - 6.0, 10.0));
+                painter.rect_filled(sw, 2.0, *col);
+                painter.text(
+                    Pos2::new(sw.center().x, sw.bottom() + 3.0),
+                    egui::Align2::CENTER_TOP,
+                    *lbl,
+                    egui::FontId::monospace(8.8),
+                    Color32::from_rgb(203, 213, 225),
+                );
+            }
+        }
+        HeatmapLayer::ResponseDistricts => {
+            painter.text(
+                Pos2::new(cb_rect.left() + 8.0, cb_rect.top() + 5.0),
+                egui::Align2::LEFT_TOP,
+                "Carter-Larson Response Districts (Beats)",
+                egui::FontId::monospace(9.5),
+                Color32::from_rgb(226, 232, 240),
+            );
+            let beats = [
+                ("U1", Color32::from_rgb(244, 63, 94)),
+                ("U2", Color32::from_rgb(56, 189, 248)),
+                ("U3", Color32::from_rgb(16, 185, 129)),
+                ("U4", Color32::from_rgb(250, 204, 21)),
+                ("U5", Color32::from_rgb(168, 85, 247)),
+                ("Seam", Color32::from_rgb(254, 243, 199)),
+            ];
+            let bw = (cb_rect.width() - 16.0) / beats.len() as f32;
+            for (bi, (lbl, col)) in beats.iter().enumerate() {
+                let bx = cb_rect.left() + 8.0 + bi as f32 * bw;
+                let sw = Rect::from_min_size(Pos2::new(bx + 2.0, cb_rect.top() + 21.0), EguiVec2::new(bw - 6.0, 10.0));
+                painter.rect_filled(sw, 2.0, *col);
+                painter.text(
+                    Pos2::new(sw.center().x, sw.bottom() + 3.0),
+                    egui::Align2::CENTER_TOP,
+                    *lbl,
+                    egui::FontId::monospace(8.5),
+                    Color32::from_rgb(203, 213, 225),
+                );
+            }
+        }
+        _ => {
+            let (title, tick_l, tick_m, tick_r) = heatmap_layer_legend_spec(layer, util_sub);
+            painter.text(
+                Pos2::new(cb_rect.left() + 8.0, cb_rect.top() + 5.0),
+                egui::Align2::LEFT_TOP,
+                title,
+                egui::FontId::monospace(9.5),
+                Color32::from_rgb(226, 232, 240),
+            );
+            let bar_rect = Rect::from_min_size(
+                Pos2::new(cb_rect.left() + 10.0, cb_rect.top() + 21.0),
+                EguiVec2::new(cb_rect.width() - 20.0, 11.0),
+            );
+            let steps = 40usize;
+            for si in 0..steps {
+                let t = (si as f32 + 0.5) / steps as f32;
+                let col = match layer {
+                    HeatmapLayer::VspEmissions | HeatmapLayer::FireFollowingQuake => {
+                        if t < 0.5 {
+                            let u = t * 2.0;
+                            Color32::from_rgb((30.0 + 185.0 * u) as u8, (22.0 + 40.0 * u) as u8, (75.0 + 95.0 * u) as u8)
+                        } else {
+                            let u = (t - 0.5) * 2.0;
+                            Color32::from_rgb((215.0 + 38.0 * u) as u8, (62.0 + 172.0 * u) as u8, (170.0 - 90.0 * u) as u8)
+                        }
+                    }
+                    HeatmapLayer::UtilityLifelines => {
+                        if t < 0.5 {
+                            let u = t * 2.0;
+                            Color32::from_rgb(245, (44.0 + 150.0 * u) as u8, 68)
+                        } else {
+                            let u = (t - 0.5) * 2.0;
+                            Color32::from_rgb((245.0 - 210.0 * u) as u8, (194.0 + 20.0 * u) as u8, (68.0 + 96.0 * u) as u8)
+                        }
+                    }
+                    _ => {
+                        if t < 0.5 {
+                            let u = t * 2.0;
+                            Color32::from_rgb((16.0 + 36.0 * u) as u8, (112.0 + 78.0 * u) as u8, (148.0 + 96.0 * u) as u8)
+                        } else {
+                            let u = (t - 0.5) * 2.0;
+                            Color32::from_rgb((52.0 + 198.0 * u) as u8, (190.0 + 14.0 * u) as u8, (244.0 - 208.0 * u) as u8)
+                        }
+                    }
+                };
+                let u0 = si as f32 / steps as f32;
+                let u1 = (si + 1) as f32 / steps as f32;
+                let seg = Rect::from_min_max(
+                    Pos2::new(bar_rect.left() + u0 * bar_rect.width(), bar_rect.top()),
+                    Pos2::new(bar_rect.left() + u1 * bar_rect.width(), bar_rect.bottom()),
+                );
+                painter.rect_filled(seg, 0.0, col);
+            }
+            painter.rect_stroke(
+                bar_rect,
+                1.0,
+                Stroke::new(0.8_f32, Color32::from_rgb(100, 116, 139)),
+            );
+            for (frac, lbl, align) in [
+                (0.0f32, tick_l, egui::Align2::LEFT_TOP),
+                (0.5f32, tick_m, egui::Align2::CENTER_TOP),
+                (1.0f32, tick_r, egui::Align2::RIGHT_TOP),
+            ] {
+                painter.text(
+                    Pos2::new(bar_rect.left() + frac * bar_rect.width(), bar_rect.bottom() + 3.0),
+                    align,
+                    lbl,
+                    egui::FontId::monospace(9.0),
+                    Color32::from_rgb(203, 213, 225),
+                );
+            }
+        }
+    }
+}
+
+fn paint_metric_scale_and_wind_rose(
+    painter: &egui::Painter,
+    card: Rect,
+    cam_zoom_px_per_m: f64,
+    plume: PlumePhysicsParams,
+) {
+    painter.rect_filled(
+        card,
+        6.0,
+        Color32::from_rgba_unmultiplied(15, 23, 42, 228),
+    );
+    painter.rect_stroke(
+        card,
+        6.0,
+        Stroke::new(1.0_f32, Color32::from_rgb(51, 65, 85)),
+    );
+
+    // Dynamic metric scale bar choosing clean engineering ticks targeting ~55..105 px width
+    let px_per_m = (cam_zoom_px_per_m as f32).max(0.05);
+    let target_m = 78.0 / px_per_m;
+    let step_m = [10.0f32, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0]
+        .into_iter()
+        .find(|&m| m >= target_m * 0.75)
+        .unwrap_or(1000.0);
+    let bar_px = (step_m * px_per_m).clamp(28.0, 102.0);
+    let bar_r = Pos2::new(card.left() + 110.0, card.bottom() - 16.0);
+    let bar_l = Pos2::new((bar_r.x - bar_px).max(card.left() + 10.0), bar_r.y);
+    let bar_col = Color32::from_rgb(226, 232, 240);
+    painter.line_segment([bar_l, bar_r], Stroke::new(2.0_f32, bar_col));
+    painter.line_segment(
+        [Pos2::new(bar_l.x, bar_l.y - 4.0), Pos2::new(bar_l.x, bar_l.y + 4.0)],
+        Stroke::new(1.5_f32, bar_col),
+    );
+    painter.line_segment(
+        [Pos2::new(bar_r.x, bar_r.y - 4.0), Pos2::new(bar_r.x, bar_r.y + 4.0)],
+        Stroke::new(1.5_f32, bar_col),
+    );
+    painter.text(
+        Pos2::new(0.5 * (bar_l.x + bar_r.x), bar_r.y - 7.0),
+        egui::Align2::CENTER_BOTTOM,
+        format!("{step_m:.0} m"),
+        egui::FontId::monospace(9.5),
+        bar_col,
+    );
+
+    // Wind-rose compass & prevailing wind vector indicator
+    let rose_c = Pos2::new(card.right() - 28.0, card.top() + 25.0);
+    let r_rose = 16.0f32;
+    painter.circle_stroke(rose_c, r_rose, Stroke::new(1.1_f32, Color32::from_rgb(71, 85, 105)));
+    painter.text(
+        Pos2::new(rose_c.x, rose_c.y - r_rose - 1.0),
+        egui::Align2::CENTER_BOTTOM,
+        "N",
+        egui::FontId::monospace(8.5),
+        Color32::from_rgb(148, 163, 184),
+    );
+    let wind_spd = (plume.wind_x_mps * plume.wind_x_mps + plume.wind_y_mps * plume.wind_y_mps).sqrt();
+    if wind_spd > 0.05 {
+        let dir_x = plume.wind_x_mps / wind_spd;
+        let dir_y = plume.wind_y_mps / wind_spd;
+        let tip = Pos2::new(rose_c.x + dir_x * (r_rose - 3.0), rose_c.y + dir_y * (r_rose - 3.0));
+        let tail = Pos2::new(rose_c.x - dir_x * (r_rose * 0.45), rose_c.y - dir_y * (r_rose * 0.45));
+        let w_col = Color32::from_rgb(56, 189, 248);
+        painter.line_segment([tail, tip], Stroke::new(2.0_f32, w_col));
+        let perp = EguiVec2::new(-dir_y, dir_x) * 3.8;
+        let back = Pos2::new(tip.x - dir_x * 5.2, tip.y - dir_y * 5.2);
+        painter.line_segment([tip, back + perp], Stroke::new(1.6_f32, w_col));
+        painter.line_segment([tip, back - perp], Stroke::new(1.6_f32, w_col));
+    }
+    painter.text(
+        Pos2::new(rose_c.x, card.bottom() - 8.0),
+        egui::Align2::CENTER_BOTTOM,
+        format!("{wind_spd:.1} m/s"),
+        egui::FontId::monospace(8.8),
+        Color32::from_rgb(125, 211, 252),
+    );
 }
 
 impl eframe::App for UrbanGridGuiApp {
@@ -13148,5 +13505,75 @@ mod tests {
         assert!(app.screen == GuiScreen::ActiveWorkbench);
         assert!(app.tab == DockTab::ResilienceStress);
         assert!(app.stress_sub_mode == StressSubMode::FemaCommsArchitecture);
+    }
+
+    #[test]
+    fn test_cad_hotkeys_camera_fit_speed_shortcuts_and_all_layer_legends() {
+        let osm = parse_osm_xml_str(&builtin_riverfront_bridges_osm()).unwrap();
+        let world = SimulationWorld::new(RoadNetwork::compile(&osm));
+        let mut app = UrbanGridGuiApp::new_with_wgpu_state(None, world);
+        app.screen = GuiScreen::ActiveWorkbench;
+
+        let ctx = egui::Context::default();
+        let rect = Some(Rect::from_min_size(
+            Pos2::ZERO,
+            EguiVec2::new(1440.0, 900.0),
+        ));
+        let press = |app: &mut UrbanGridGuiApp, key: egui::Key| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    time: Some(0.1),
+                    screen_rect: rect,
+                    events: vec![egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    ..Default::default()
+                },
+                |c| app.ui_step(c),
+            );
+        };
+
+        // 1-7 CAD tool switching
+        press(&mut app, egui::Key::Num2);
+        assert_eq!(app.tool, ViewportTool::DrawRoad);
+        press(&mut app, egui::Key::Num7);
+        assert_eq!(app.tool, ViewportTool::ToggleClosure);
+        press(&mut app, egui::Key::Num1);
+        assert_eq!(app.tool, ViewportTool::Inspect);
+
+        // Camera fit R/0 restores center and zoom after pan/zoom perturbation
+        let orig_x = app.cam_x;
+        let orig_y = app.cam_y;
+        app.cam_x += 250.0;
+        app.cam_zoom = 5.0;
+        press(&mut app, egui::Key::R);
+        assert!((app.cam_x - orig_x).abs() < 1e-6);
+        assert!((app.cam_y - orig_y).abs() < 1e-6);
+        app.cam_y -= 180.0;
+        press(&mut app, egui::Key::Num0);
+        assert!((app.cam_y - orig_y).abs() < 1e-6);
+
+        // [/] speed shortcuts
+        let s0 = app.speed_scale;
+        press(&mut app, egui::Key::CloseBracket);
+        assert!((app.speed_scale - s0 * 2.0).abs() < 1e-6);
+        press(&mut app, egui::Key::OpenBracket);
+        assert!((app.speed_scale - s0).abs() < 1e-6);
+
+        // Every continuous layer resolves a non-empty legend title and unit range
+        for l in [
+            HeatmapLayer::VspEmissions,
+            HeatmapLayer::AgentDensity,
+            HeatmapLayer::UtilityLifelines,
+            HeatmapLayer::WtpTurbidityStorage,
+        ] {
+            let (title, _, _, r_lbl) =
+                heatmap_layer_legend_spec(l, UtilityHeatmapSublayer::CompositeLifelineHealth);
+            assert!(!title.is_empty() && !r_lbl.is_empty());
+        }
     }
 }

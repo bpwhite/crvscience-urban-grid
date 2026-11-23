@@ -32,6 +32,30 @@ struct CameraUniform {
 @group(0) @binding(0) var<uniform> cam: CameraUniform;
 @group(0) @binding(1) var heatmap_tex: texture_2d<f32>;
 @group(0) @binding(2) var heatmap_sampler: sampler;
+@group(0) @binding(3) var<storage, read> scalar_field: array<f32>;
+
+const HEATMAP_GRID_DIM: u32 = 256u;
+
+fn sample_scalar_clamped(ix: i32, iy: i32) -> f32 {
+    let cx = u32(clamp(ix, 0, i32(HEATMAP_GRID_DIM) - 1));
+    let cy = u32(clamp(iy, 0, i32(HEATMAP_GRID_DIM) - 1));
+    return scalar_field[cy * HEATMAP_GRID_DIM + cx];
+}
+
+fn sample_scalar_bilinear(uv: vec2<f32>) -> f32 {
+    let max_idx = f32(HEATMAP_GRID_DIM - 1u);
+    let fx = clamp(uv.x, 0.0, 1.0) * max_idx;
+    let fy = clamp(uv.y, 0.0, 1.0) * max_idx;
+    let x0 = i32(floor(fx));
+    let y0 = i32(floor(fy));
+    let tx = fx - f32(x0);
+    let ty = fy - f32(y0);
+    let s00 = sample_scalar_clamped(x0, y0);
+    let s10 = sample_scalar_clamped(x0 + 1, y0);
+    let s01 = sample_scalar_clamped(x0, y0 + 1);
+    let s11 = sample_scalar_clamped(x0 + 1, y0 + 1);
+    return mix(mix(s00, s10, tx), mix(s01, s11, tx), ty);
+}
 
 fn world_to_clip(world_xy: vec2<f32>) -> vec4<f32> {
     let half_vp = max(cam.viewport_px * 0.5, vec2<f32>(1.0, 1.0));
@@ -75,6 +99,7 @@ fn vs_heatmap(@builtin(vertex_index) vid: u32) -> HeatmapOut {
 fn fs_heatmap(in: HeatmapOut) -> @location(0) vec4<f32> {
     // Always sample in uniform control flow for strict Vulkan/DX12/Metal Naga compliance
     let raw = textureSample(heatmap_tex, heatmap_sampler, in.uv);
+    let scalar_raw = sample_scalar_bilinear(in.uv);
     if (cam.heatmap_mode == 0u || raw.a <= 0.004) {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
@@ -82,10 +107,9 @@ fn fs_heatmap(in: HeatmapOut) -> @location(0) vec4<f32> {
     var rgb = raw.rgb;
     var alpha = raw.a * cam.heatmap_opacity;
 
-    // Subtle topographic iso-contour bands on continuous fields (`3u..=4u` & `7u+`), keeping `5u` (baked 60s EMS contours) & `6u` ResponseDistricts crisp!
+    // Topographic iso-contours derived directly from raw scalar concentration rather than RGB luma
     if (cam.heatmap_mode == 3u || cam.heatmap_mode == 4u || cam.heatmap_mode >= 7u) {
-        let lum = dot(rgb, vec3<f32>(0.299, 0.587, 0.114));
-        let band = abs(fract(lum * 7.0) - 0.5);
+        let band = abs(fract(clamp(scalar_raw, 0.0, 1.0) * 7.0) - 0.5);
         let contour = 1.0 - smoothstep(0.0, 0.055, band);
         rgb = mix(rgb, rgb * 1.28 + vec3<f32>(0.08, 0.10, 0.12), contour * 0.35);
     }
@@ -281,8 +305,10 @@ fn vs_agent(@builtin(vertex_index) vid: u32, inst: AgentInstanceIn) -> AgentVary
     let min_world_half = min_px / max(cam.zoom_px_per_m, 0.08);
 
     let halo_scale = select(1.22, 2.75, kind == 5u);
-    let hl = max(inst.half_len_m, min_world_half) * halo_scale;
-    let hw = max(inst.half_wid_m, min_world_half * 0.85) * halo_scale;
+    let body_hl = max(inst.half_len_m, min_world_half);
+    let body_hw = max(inst.half_wid_m, min_world_half * 0.85);
+    let hl = body_hl * halo_scale;
+    let hw = body_hw * halo_scale;
 
     let c = cos(inst.heading_rad);
     let s = sin(inst.heading_rad);
@@ -296,7 +322,8 @@ fn vs_agent(@builtin(vertex_index) vid: u32, inst: AgentInstanceIn) -> AgentVary
     out.uv = corner * halo_scale;
     out.color = inst.color;
     out.flags = inst.flags;
-    out.px_radius = hw * cam.zoom_px_per_m;
+    // Physical vehicle chassis pixel radius decoupled from `halo_scale`
+    out.px_radius = body_hw * cam.zoom_px_per_m;
     return out;
 }
 

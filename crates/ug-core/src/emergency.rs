@@ -118,7 +118,8 @@ pub fn evp_override_connector_light(
 
 /// Advances multi-hop corridor green-wave signal preemption across `junctions`, populates
 /// `evp_corridor_segments` (for GPU green-wave rendering), and returns per-segment active siren
-/// rear-most `s_m` coordinates for `O(1)` `MOBIL` pull-over & shoulder yielding checks.
+/// `s_m` coordinates for `O(1)` `MOBIL` pull-over & shoulder yielding checks without overwriting
+/// multiple co-located responders.
 #[allow(clippy::too_many_arguments)]
 pub fn step_emergency_preemption(
     dt: f64,
@@ -133,11 +134,11 @@ pub fn step_emergency_preemption(
     evp_corridor_segments: &mut Vec<bool>,
     completed_ev_trips: u64,
     yielding_vehicles: usize,
-) -> (EvpTelemetry, Vec<Option<f64>>) {
+) -> (EvpTelemetry, Vec<Vec<f64>>) {
     let n_segs = segments.len();
     evp_corridor_segments.clear();
     evp_corridor_segments.resize(n_segs, false);
-    let mut siren_seg_s: Vec<Option<f64>> = vec![None; n_segs];
+    let mut siren_seg_s: Vec<Vec<f64>> = vec![Vec::new(); n_segs];
 
     if !cfg.enabled {
         for j in junctions.iter_mut() {
@@ -170,17 +171,13 @@ pub fn step_emergency_preemption(
             CarrierRef::Lane(lid) => {
                 let l = &lanes[lid];
                 let sid = l.segment_id;
-                siren_seg_s[sid] = Some(
-                    siren_seg_s[sid]
-                        .map(|prev| prev.min(veh.s_m))
-                        .unwrap_or(veh.s_m),
-                );
+                siren_seg_s[sid].push(veh.s_m);
                 (sid, (l.length - veh.s_m).max(0.0))
             }
             CarrierRef::Connector(cid) => {
                 let conn = &connectors[cid];
                 let sid = conn.to_seg_id;
-                siren_seg_s[sid] = Some(0.0);
+                siren_seg_s[sid].push(0.0);
                 (sid, segments[sid].length)
             }
         };
@@ -240,11 +237,7 @@ pub fn step_emergency_preemption(
             let Some(next_sid) = next_opt else { break };
             if hop == 0 && rem_on_cur_m < cfg.siren_yield_radius_m * 0.65 {
                 // Alert vehicles near the entry of `next_sid` so the receiving lane clears early
-                siren_seg_s[next_sid] = Some(
-                    siren_seg_s[next_sid]
-                        .map(|p| p.min(-rem_on_cur_m))
-                        .unwrap_or(-rem_on_cur_m),
-                );
+                siren_seg_s[next_sid].push(-rem_on_cur_m);
             }
             dist_acc_m += segments[next_sid].length;
             cur_sid = next_sid;
