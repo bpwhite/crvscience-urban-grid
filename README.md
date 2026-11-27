@@ -57,4 +57,5 @@ Core CLI subcommands: `gui`, `tui`, `simulate`, `compare`, `batch`, `mclp`, `str
 - **Companion Preprint (`APP-PREPRINT-11`)**: *Urban-Grid: Modeling City Traffic, Emergency Response Coverage, and Earthquake Evacuation* — <https://crvscience.com/apps/preprints/urban-grid-microscopic-traffic-resilience>
 - **Concept DOI**: [`10.5281/zenodo.24222394`](https://doi.org/10.5281/zenodo.24222394)
 - **Source Repository**: <https://github.com/bpwhite/crvscience-urban-grid>
+- **Citation Metadata**: [CITATION.cff](CITATION.cff)
 - **License**: GNU General Public License v3.0 or later (`GPL-3.0-or-later`).

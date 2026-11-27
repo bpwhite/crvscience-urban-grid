@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Core OpenStreetMap lane compiler, 50k+ multi-modal IDM/MOBIL/crowd physics, urban planning models, and bytemuck GPU instance/heatmap packers"
+homepage.workspace = true
 
 [features]
 default = []

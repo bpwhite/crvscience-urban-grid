@@ -11,6 +11,7 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/bpwhite/crvscience-urban-grid"
 rust-version = "1.81"
+homepage = "https://crvscience.com/apps"
 
 [workspace.dependencies]
 bytemuck = { version = "1.18", features = ["derive"] }
