@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://gnu.org>.
 
+#![forbid(unsafe_code)]
+
 pub mod aeromedical_medevac;
 pub mod batch_eval;
 pub mod burn_scar_debris_flow;
@@ -212,10 +214,11 @@ pub use seismic_mc::{
     RECOVERY_TIMELINE_DAYS, SEISMIC_BRIDGE_CSV_HEADER, SEISMIC_PIPELINE_CSV_HEADER,
 };
 pub use resilience::{
-    enumerate_corridor_closure_units, evaluate_resilience_stress_test,
-    solve_robust_mclp_under_disruptions, CorridorClosureUnit, CorridorDisruptionOutcome,
-    DisruptionInterdictionDepth, ResilienceStressConfig, ResilienceStressReport,
-    RESILIENCE_CSV_HEADER,
+    enumerate_corridor_closure_units, evaluate_multi_scenario_resilience_diff,
+    evaluate_resilience_stress_test, solve_robust_mclp_under_disruptions, CorridorClosureUnit,
+    CorridorDisruptionOutcome, DisruptionInterdictionDepth, ResilienceScorecardDiffReport,
+    ResilienceStressConfig, ResilienceStressReport, ScenarioResilienceScorecardRow,
+    RESILIENCE_CSV_HEADER, RESILIENCE_DIFF_CSV_HEADER,
 };
 pub use persistence::{
     PersistenceError, ScenarioSnapshot, TelemetrySampleRow, TelemetryTimeSeriesRecorder,

@@ -14,6 +14,7 @@
 // along with this program.  If not, see <https://gnu.org>.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![deny(unsafe_code)]
 
 mod batch;
 #[cfg(feature = "gui")]
@@ -29,7 +30,8 @@ use std::path::PathBuf;
 use ug_core::{
     apply_tod_upzoning_policy, builtin_braess_diamond_osm, builtin_foothill_canyon_wui_osm,
     builtin_harbor_peninsula_osm, builtin_metropolis_50k_osm, builtin_radial_ring_plazas_osm,
-    builtin_riverfront_bridges_osm, builtin_roundabout_osm, load_osm_path, parse_osm_xml_str,
+    builtin_riverfront_bridges_osm, builtin_roundabout_osm,
+    evaluate_multi_scenario_resilience_diff, load_osm_path, parse_osm_xml_str,
     BatchExperimentConfig, BusynessModel, DisruptionInterdictionDepth, DiurnalDispatchRegime,
     DiurnalProfileConfig, DiurnalWindowPreset, HypercubeConfig, HypercubeQueueDiscipline,
     MclpSitingConfig, RedistrictingConfig, RedistrictingObjectiveMode,
@@ -414,6 +416,23 @@ enum Commands {
         harden_mclp: bool,
         #[arg(long, default_value_t = true)]
         n_minus_2: bool,
+        #[arg(long)]
+        csv_out: Option<PathBuf>,
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+    },
+    /// Compare Baseline vs TOD Upzone vs Max-Pressure vs Contraflow multi-scenario resilience KPIs
+    ResilienceDiff {
+        #[arg(long, value_enum, default_value_t = BuiltinScenario::RiverfrontBridges)]
+        scenario: BuiltinScenario,
+        #[arg(long)]
+        osm: Option<PathBuf>,
+        #[arg(long)]
+        gtfs: Option<PathBuf>,
+        #[arg(long)]
+        load_snapshot: Option<PathBuf>,
+        #[arg(long, default_value_t = 60.0)]
+        seconds: f64,
         #[arg(long)]
         csv_out: Option<PathBuf>,
         #[arg(long)]
@@ -1095,6 +1114,7 @@ fn build_world(
 }
 
 #[cfg(windows)]
+#[allow(unsafe_code)]
 fn attach_parent_console_if_cli() {
     if std::env::args_os().len() > 1 {
         unsafe {
@@ -3699,6 +3719,80 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 net.connectors.len()
             );
         }
+        Commands::ResilienceDiff {
+            scenario,
+            osm,
+            gtfs,
+            load_snapshot,
+            seconds,
+            csv_out,
+            json_out,
+        } => {
+            let world = build_world(
+                scenario,
+                osm.as_ref(),
+                gtfs.as_ref(),
+                load_snapshot.as_ref(),
+                None,
+            )?;
+            let report = evaluate_multi_scenario_resilience_diff(&world, seconds);
+            println!("{}", report.format_table());
+            if let Some(cout) = csv_out {
+                if let Some(parent) = cout.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        fs::create_dir_all(parent)?;
+                    }
+                }
+                fs::write(&cout, report.to_csv_string())?;
+                println!("Exported resilience diff CSV -> {}", cout.display());
+            }
+            if let Some(jout) = json_out {
+                if let Some(parent) = jout.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        fs::create_dir_all(parent)?;
+                    }
+                }
+                fs::write(&jout, report.to_json_pretty()?)?;
+                println!("Exported resilience diff JSON -> {}", jout.display());
+            }
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_parses_resilience_diff_subcommand() {
+        let parsed = Cli::try_parse_from([
+            "urban-grid",
+            "resilience-diff",
+            "--scenario",
+            "harbor-peninsula",
+            "--seconds",
+            "45",
+            "--csv-out",
+            "exports/resilience_diff.csv",
+            "--json-out",
+            "exports/resilience_diff.json",
+        ])
+        .expect("clap parses resilience-diff subcommand");
+        match parsed.command {
+            Some(Commands::ResilienceDiff {
+                scenario,
+                seconds,
+                csv_out,
+                json_out,
+                ..
+            }) => {
+                assert_eq!(scenario, BuiltinScenario::HarborPeninsula);
+                assert!((seconds - 45.0).abs() < 1e-9);
+                assert_eq!(csv_out, Some(PathBuf::from("exports/resilience_diff.csv")));
+                assert_eq!(json_out, Some(PathBuf::from("exports/resilience_diff.json")));
+            }
+            other => panic!("Unexpected command: {other:?}"),
+        }
+    }
 }

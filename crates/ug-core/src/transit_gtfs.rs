@@ -577,8 +577,7 @@ impl TransitGtfsSystem {
                 if si == 0 {
                     seg_chain.push(target_seg);
                     route_stops.push((stop_idx, 0));
-                } else {
-                    let prev_seg = *seg_chain.last().unwrap();
+                } else if let Some(&prev_seg) = seg_chain.last() {
                     let sub = shortest_segment_chain(net, prev_seg, target_seg);
                     if sub.is_empty() {
                         continue;
@@ -587,6 +586,9 @@ impl TransitGtfsSystem {
                         seg_chain.push(s);
                     }
                     route_stops.push((stop_idx, seg_chain.len() - 1));
+                } else {
+                    seg_chain.push(target_seg);
+                    route_stops.push((stop_idx, 0));
                 }
             }
 
@@ -784,7 +786,8 @@ impl TransitGtfsSystem {
             }
             let r_id = routes.len();
             let first_name = &net.segments[best_chain[0]].name;
-            let last_name = &net.segments[*best_chain.last().unwrap()].name;
+            let last_seg = best_chain.last().copied().unwrap_or(best_chain[0]);
+            let last_name = &net.segments[last_seg].name;
             routes.push(TransitRoute {
                 id: r_id,
                 gtfs_route_id: format!("CTS_{}", r_id + 1),

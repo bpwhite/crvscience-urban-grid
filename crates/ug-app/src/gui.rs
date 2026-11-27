@@ -58,7 +58,8 @@ use ug_core::{
     MclpOptimizationReport, MclpSitingConfig, MedevacAvionicsRegime, RedistrictingConfig,
     RotorcraftAirframeClass, RedistrictingObjectiveMode, RedistrictingReport, MclpWeightingMode,
     SitingObjectiveModel, BridgeStructuralArchetype, BuriedPipeMaterialClass,
-    PipelineFragilityLaw, ResilienceStressConfig, ResilienceStressReport,
+    PipelineFragilityLaw, ResilienceScorecardDiffReport, ResilienceStressConfig,
+    ResilienceStressReport, evaluate_multi_scenario_resilience_diff,
     sample_ala_hazus_pgv_curves, sample_hazus_restoration_curves, SeismicMonteCarloReport,
     SeismicScenarioConfig, pack_agents_into, pack_road_quads_into, parse_osm_xml_str, ControlMode,
     GpuCameraUniform, BoardingFareMode, BusCoachSpec, GpuAgentInstance, GpuPlumeComputeUniform,
@@ -496,6 +497,9 @@ pub struct UrbanGridGuiApp {
     sweep_csv_path: String,
     active_sweep: Option<ActiveGuiSweepHandle>,
     latest_sweep_report: Option<BatchExperimentReport>,
+    latest_resilience_diff_report: Option<ResilienceScorecardDiffReport>,
+    resilience_diff_csv_path: String,
+    resilience_diff_json_path: String,
     screen: GuiScreen,
     resilience_cat_filter: ResilienceCategoryFilter,
     hub_search_query: String,
@@ -683,6 +687,9 @@ impl UrbanGridGuiApp {
             sweep_csv_path: "exports/gui_batch_scorecard.csv".to_string(),
             active_sweep: None,
             latest_sweep_report: None,
+            latest_resilience_diff_report: None,
+            resilience_diff_csv_path: "exports/resilience_scorecard_diff.csv".to_string(),
+            resilience_diff_json_path: "exports/resilience_scorecard_diff.json".to_string(),
             screen: GuiScreen::MainEntranceHub,
             resilience_cat_filter: ResilienceCategoryFilter::All17,
             hub_search_query: String::new(),
@@ -1030,7 +1037,7 @@ impl UrbanGridGuiApp {
                     Option<StressSubMode>,
                     HeatmapLayer,
                     ViewportTool,
-                ); 26] = [
+                ); 27] = [
                     (
                         "Traffic & Signals",
                         "Signal Control, Max-Pressure & EVP Green-Wave Preemption",
@@ -1237,6 +1244,14 @@ impl UrbanGridGuiApp {
                         DockTab::ResilienceStress,
                         Some(StressSubMode::WtpTurbidityStorage),
                         HeatmapLayer::WtpTurbidityStorage,
+                        ViewportTool::Inspect,
+                    ),
+                    (
+                        "Resilience Scorecard Diff",
+                        "Compare Baseline vs TOD Upzone vs Max-Pressure vs Contraflow KPIs (CSV/JSON)",
+                        DockTab::BatchSweep,
+                        None,
+                        HeatmapLayer::EmergencyResponse4Min,
                         ViewportTool::Inspect,
                     ),
                 ];
@@ -4734,6 +4749,84 @@ OffPk ({:>2}h): {:.2}/hr | V/C={:.2} (+{:.0}% BPR) | E[T]={:.1}s | Sprd={:.1}pt
                                     }
                                 }
                             }
+                        }
+
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(
+                                "Multi-Scenario Resilience Scorecard Diff (Baseline vs. TOD vs. Max-Pressure vs. Contraflow)",
+                            )
+                            .strong(),
+                        );
+                        if ui.button("Run 4-Scenario Resilience Diff").clicked() {
+                            let diff = evaluate_multi_scenario_resilience_diff(&self.world, 20.0);
+                            self.set_io_ok(format!(
+                                "Evaluated 4-scenario resilience diff ({:.1} ms)",
+                                diff.solve_time_ms
+                            ));
+                            self.latest_resilience_diff_report = Some(diff);
+                        }
+                        if let Some(diff) = self.latest_resilience_diff_report.clone() {
+                            egui::Grid::new("gui_resilience_diff_grid")
+                                .striped(true)
+                                .spacing([8.0, 4.0])
+                                .show(ui, |ui| {
+                                    ui.strong("Scenario");
+                                    ui.strong("Mph");
+                                    ui.strong("15m%");
+                                    ui.strong("Pass%");
+                                    ui.strong("T90(m)");
+                                    ui.strong("dT90");
+                                    ui.end_row();
+                                    for row in &diff.rows {
+                                        ui.monospace(&row.scenario_slug);
+                                        ui.monospace(format!("{:.1}", row.mean_speed_mph));
+                                        ui.monospace(format!("{:.1}", row.access_15min_pct));
+                                        ui.monospace(format!("{:.1}", row.resilience_pass_rate_pct));
+                                        ui.monospace(format!("{:.1}", row.evac_t90_clearance_min));
+                                        ui.monospace(format!("{:+.1}", row.delta_evac_t90_vs_baseline_min));
+                                        ui.end_row();
+                                    }
+                                });
+                            ui.horizontal(|ui| {
+                                ui.label("CSV:");
+                                ui.text_edit_singleline(&mut self.resilience_diff_csv_path);
+                                csv_browse_button(ui, &mut self.resilience_diff_csv_path);
+                            });
+                            ui.horizontal(|ui| {
+                                if ui.small_button("Export Diff CSV").clicked() {
+                                    let p = Path::new(&self.resilience_diff_csv_path);
+                                    if let Some(par) = p.parent() {
+                                        if !par.as_os_str().is_empty() {
+                                            let _ = std::fs::create_dir_all(par);
+                                        }
+                                    }
+                                    match std::fs::write(p, diff.to_csv_string()) {
+                                        Ok(()) => self.set_io_ok(format!(
+                                            "Exported resilience diff CSV -> {}",
+                                            self.resilience_diff_csv_path
+                                        )),
+                                        Err(e) => self.set_io_err(format!("Diff CSV export failed: {e}")),
+                                    }
+                                }
+                                if ui.small_button("Export Diff JSON").clicked() {
+                                    let p = Path::new(&self.resilience_diff_json_path);
+                                    if let Some(par) = p.parent() {
+                                        if !par.as_os_str().is_empty() {
+                                            let _ = std::fs::create_dir_all(par);
+                                        }
+                                    }
+                                    match diff.to_json_pretty().and_then(|j| {
+                                        std::fs::write(p, j).map_err(serde_json::Error::io)
+                                    }) {
+                                        Ok(()) => self.set_io_ok(format!(
+                                            "Exported resilience diff JSON -> {}",
+                                            self.resilience_diff_json_path
+                                        )),
+                                        Err(e) => self.set_io_err(format!("Diff JSON export failed: {e}")),
+                                    }
+                                }
+                            });
                         }
                     }
                     DockTab::ResilienceStress => {
@@ -12879,17 +12972,8 @@ impl eframe::App for UrbanGridGuiApp {
 }
 
 fn block_on_future<F: std::future::Future>(fut: F) -> F::Output {
-    fn noop_clone(_: *const ()) -> std::task::RawWaker {
-        noop_raw_waker()
-    }
-    fn noop(_: *const ()) {}
-    fn noop_raw_waker() -> std::task::RawWaker {
-        static VTABLE: std::task::RawWakerVTable =
-            std::task::RawWakerVTable::new(noop_clone, noop, noop, noop);
-        std::task::RawWaker::new(std::ptr::null(), &VTABLE)
-    }
-    let waker = unsafe { std::task::Waker::from_raw(noop_raw_waker()) };
-    let mut cx = std::task::Context::from_waker(&waker);
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
     let mut fut = std::pin::pin!(fut);
     loop {
         match fut.as_mut().poll(&mut cx) {
@@ -13575,5 +13659,42 @@ mod tests {
                 heatmap_layer_legend_spec(l, UtilityHeatmapSublayer::CompositeLifelineHealth);
             assert!(!title.is_empty() && !r_lbl.is_empty());
         }
+    }
+
+    #[test]
+    fn command_palette_ctrl_k_opens_and_jumps_to_resilience_diff() {
+        let osm = parse_osm_xml_str(&builtin_riverfront_bridges_osm()).expect("builtin osm");
+        let world = SimulationWorld::new(RoadNetwork::compile(&osm));
+        let mut app = UrbanGridGuiApp::new_with_wgpu_state(None, world);
+        let ctx = egui::Context::default();
+        assert!(!app.command_palette_open);
+
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    Pos2::ZERO,
+                    EguiVec2::new(1400.0, 900.0),
+                )),
+                events: vec![egui::Event::Key {
+                    key: egui::Key::K,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }],
+                ..Default::default()
+            },
+            |c| app.ui_step(c),
+        );
+        assert!(app.command_palette_open, "Ctrl+K must open command palette");
+
+        app.enter_workbench(
+            DockTab::BatchSweep,
+            None,
+            HeatmapLayer::EmergencyResponse4Min,
+            ViewportTool::Inspect,
+        );
+        assert!(app.tab == DockTab::BatchSweep);
+        assert!(!app.command_palette_open);
     }
 }

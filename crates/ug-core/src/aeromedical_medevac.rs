@@ -1473,35 +1473,32 @@ pub fn run_aeromedical_medevac_monte_carlo(
 
                     // Check if primary scene airlift via Park LZ to Level-I Trauma/Burn Center saves >= 8 min
                     let mut airlifted_b = 0.0;
-                    if gnd_m >= 22.0 && rem_air_litters > 1e-6 && !park_lz_indices.is_empty() {
-                        let best_lz = *park_lz_indices
-                            .iter()
-                            .min_by(|&&a, &&b_lz| {
-                                parcels[pi]
-                                    .center
-                                    .dist(pads[a].pos)
-                                    .partial_cmp(&parcels[pi].center.dist(pads[b_lz].pos))
-                                    .unwrap_or(Ordering::Equal)
-                            })
-                            .unwrap();
-                        let air_m = (parcels[pi].center.dist(pads[best_lz].pos) / 240.0)
-                            + pad_turn_min * 0.7
-                            + ((pads[best_lz].pos.dist(pads[0].pos) / 1000.0).max(1.5)
-                                / cruise_kmh)
-                                * 60.0;
-                        if air_m + 8.0 < gnd_m {
-                            if pad_env_now[best_lz] && pad_env_now[0] {
-                                let req = b_vol + r_vol;
-                                let lifted = req.min(rem_air_litters);
-                                rem_air_litters -= lifted;
-                                scene_airlifts += lifted;
-                                pad_scene_lifts[best_lz] += lifted;
-                                pad_in_burn[0] += lifted * (b_vol / req);
-                                airlifted_b = lifted * (b_vol / req);
-                                pending_hosp_burn[0] += airlifted_b;
-                            } else {
-                                wx_smoke_scrubs += b_vol + r_vol;
-                                pad_scrubs[best_lz] += b_vol + r_vol;
+                    if gnd_m >= 22.0 && rem_air_litters > 1e-6 {
+                        if let Some(&best_lz) = park_lz_indices.iter().min_by(|&&a, &&b_lz| {
+                            parcels[pi]
+                                .center
+                                .dist(pads[a].pos)
+                                .total_cmp(&parcels[pi].center.dist(pads[b_lz].pos))
+                        }) {
+                            let air_m = (parcels[pi].center.dist(pads[best_lz].pos) / 240.0)
+                                + pad_turn_min * 0.7
+                                + ((pads[best_lz].pos.dist(pads[0].pos) / 1000.0).max(1.5)
+                                    / cruise_kmh)
+                                    * 60.0;
+                            if air_m + 8.0 < gnd_m {
+                                if pad_env_now[best_lz] && pad_env_now[0] {
+                                    let req = b_vol + r_vol;
+                                    let lifted = req.min(rem_air_litters);
+                                    rem_air_litters -= lifted;
+                                    scene_airlifts += lifted;
+                                    pad_scene_lifts[best_lz] += lifted;
+                                    pad_in_burn[0] += lifted * (b_vol / req);
+                                    airlifted_b = lifted * (b_vol / req);
+                                    pending_hosp_burn[0] += airlifted_b;
+                                } else {
+                                    wx_smoke_scrubs += b_vol + r_vol;
+                                    pad_scrubs[best_lz] += b_vol + r_vol;
+                                }
                             }
                         }
                     }

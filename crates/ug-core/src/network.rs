@@ -985,8 +985,12 @@ impl RoadNetwork {
         lanes: &mut [Lane],
         connectors: &mut Vec<TurnConnector>,
     ) -> usize {
-        let p0 = *lanes[src_lid].pts.last().unwrap();
-        let p3 = lanes[dst_lid].pts[0];
+        let p0 = lanes[src_lid]
+            .pts
+            .last()
+            .copied()
+            .unwrap_or(Vec2 { x: 0.0, y: 0.0 });
+        let p3 = lanes[dst_lid].pts.first().copied().unwrap_or(p0);
         let src_ang = lanes[src_lid].end_angle;
         let dst_ang = lanes[dst_lid].start_angle;
         let handle = (p0.dist(p3) * 0.42).max(2.5);

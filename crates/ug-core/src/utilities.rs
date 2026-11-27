@@ -489,7 +489,7 @@ pub fn evaluate_coupled_utility_grids(
     // 2. Select anchor junctions for Substations, Water Treatment/Booster Plants, Lift Stations & WWTP
     //    - Substations: NW upland hub (`min nx+ny`) and NE/SW secondary hub (`max |nx - ny|`)
     let mut junc_order_elev_desc: Vec<usize> = (0..n_junc).collect();
-    junc_order_elev_desc.sort_by(|&a, &b| elev_m[b].partial_cmp(&elev_m[a]).unwrap());
+    junc_order_elev_desc.sort_by(|&a, &b| elev_m[b].total_cmp(&elev_m[a]));
 
     let sub1_j = junc_order_elev_desc[0];
     let sub2_j = (0..n_junc)
@@ -497,7 +497,7 @@ pub fn evaluate_coupled_utility_grids(
         .max_by(|&a, &b| {
             let da = net.junctions[a].pos.dist(net.junctions[sub1_j].pos);
             let db = net.junctions[b].pos.dist(net.junctions[sub1_j].pos);
-            da.partial_cmp(&db).unwrap()
+            da.total_cmp(&db)
         })
         .unwrap_or(sub1_j);
     let substation_juncs = if sub2_j != sub1_j && n_junc >= 4 {
@@ -873,7 +873,7 @@ pub fn evaluate_coupled_utility_grids(
     drain_order.sort_by(|&a, &b| {
         hops_to_wwtp[b]
             .cmp(&hops_to_wwtp[a])
-            .then_with(|| elev_m[b].partial_cmp(&elev_m[a]).unwrap())
+            .then_with(|| elev_m[b].total_cmp(&elev_m[a]))
     });
 
     for &u in &drain_order {

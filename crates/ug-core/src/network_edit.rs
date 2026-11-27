@@ -225,8 +225,7 @@ pub fn rebuild_world_after_network_edit(
             if idx == 0 {
                 new_chain.push(t_seg);
                 updated_stops.push((stop_id, 0));
-            } else {
-                let prev = *new_chain.last().unwrap();
+            } else if let Some(&prev) = new_chain.last() {
                 let sub = shortest_segment_chain(&world.network, prev, t_seg);
                 if !sub.is_empty() {
                     for &s in sub.iter().skip(1) {
@@ -234,6 +233,9 @@ pub fn rebuild_world_after_network_edit(
                     }
                     updated_stops.push((stop_id, new_chain.len() - 1));
                 }
+            } else {
+                new_chain.push(t_seg);
+                updated_stops.push((stop_id, 0));
             }
         }
         if !new_chain.is_empty() {

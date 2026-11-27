@@ -338,11 +338,15 @@ pub fn solve_clarke_wright_2opt_tour(
 
     // Exact 2-Opt local search refinement
     let tour_cost = |seq: &[usize]| -> f64 {
-        let mut c = dist_mat[depot_idx][seq[0]];
+        let Some(&first_stop) = seq.first() else {
+            return 0.0;
+        };
+        let mut c = dist_mat[depot_idx][first_stop];
         for w in seq.windows(2) {
             c += dist_mat[w[0]][w[1]];
         }
-        c + dist_mat[*seq.last().unwrap()][depot_idx]
+        let last_stop = seq.last().copied().unwrap_or(first_stop);
+        c + dist_mat[last_stop][depot_idx]
     };
 
     let mut best_c = tour_cost(&tour);
@@ -1154,11 +1158,13 @@ pub fn run_commodity_resupply_monte_carlo(
                             for k in 0..3.min(n_sites) {
                                 rot_stops.push(1 + ((start_s + k) % n_sites));
                             }
-                            let mut seq_min = dist_mat[0][rot_stops[0]];
+                            let first_stop = rot_stops.first().copied().unwrap_or(0);
+                            let last_stop = rot_stops.last().copied().unwrap_or(0);
+                            let mut seq_min = dist_mat[0][first_stop];
                             for w in rot_stops.windows(2) {
                                 seq_min += dist_mat[w[0]][w[1]];
                             }
-                            seq_min += dist_mat[*rot_stops.last().unwrap()][0]
+                            seq_min += dist_mat[last_stop][0]
                                 + (rot_stops.len() as f64) * dock_min;
 
                             let max_trips = (rem_shift_min / seq_min.max(25.0)).floor().max(1.0);

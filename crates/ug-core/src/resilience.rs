@@ -1371,3 +1371,288 @@ pub fn solve_robust_mclp_under_disruptions(
         solve_time_ms: t0.elapsed().as_secs_f64() * 1000.0,
     }
 }
+
+pub const RESILIENCE_DIFF_CSV_HEADER: &str = "scenario_slug,scenario_label,mean_speed_mph,delta_speed_vs_baseline_pct,throughput_veh_per_hr,delta_throughput_vs_baseline_pct,access_15min_pct,delta_access_15min_pts,vsp_co2_kg_per_hr,delta_co2_vs_baseline_pct,net_fiscal_per_acre_k_yr,delta_fiscal_vs_baseline_k_yr,nfpa_baseline_parcel_cov_pct,worst_n1_parcel_cov_pct,resilience_pass_rate_pct,delta_resilience_pass_pts,evac_t90_clearance_min,delta_evac_t90_vs_baseline_min,ems_corridor_access_pct,contraflow_lane_km_added";
+
+/// Comparative resilience & operational KPI row across Baseline, TOD, Max-Pressure, and Contraflow regimes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioResilienceScorecardRow {
+    pub scenario_slug: String,
+    pub scenario_label: String,
+    pub mean_speed_mph: f64,
+    pub delta_speed_vs_baseline_pct: f64,
+    pub throughput_veh_per_hr: f64,
+    pub delta_throughput_vs_baseline_pct: f64,
+    pub access_15min_pct: f64,
+    pub delta_access_15min_pts: f64,
+    pub vsp_co2_kg_per_hr: f64,
+    pub delta_co2_vs_baseline_pct: f64,
+    pub net_fiscal_per_acre_k_yr: f64,
+    pub delta_fiscal_vs_baseline_k_yr: f64,
+    pub nfpa_baseline_parcel_cov_pct: f64,
+    pub worst_n1_parcel_cov_pct: f64,
+    pub resilience_pass_rate_pct: f64,
+    pub delta_resilience_pass_pts: f64,
+    pub evac_t90_clearance_min: f64,
+    pub delta_evac_t90_vs_baseline_min: f64,
+    pub ems_corridor_access_pct: f64,
+    pub contraflow_lane_km_added: f64,
+}
+
+/// Multi-scenario resilience scorecard diff comparing Baseline vs. TOD vs. Max-Pressure vs. Contraflow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResilienceScorecardDiffReport {
+    pub city_label: String,
+    pub sim_seconds: f64,
+    pub solve_time_ms: f64,
+    pub rows: Vec<ScenarioResilienceScorecardRow>,
+}
+
+fn pct_diff(val: f64, base: f64) -> f64 {
+    if base.abs() < 1e-9 {
+        0.0
+    } else {
+        ((val - base) / base) * 100.0
+    }
+}
+
+/// Evaluates Baseline, TOD Upzone, Max-Pressure Adaptive, and Contraflow Evacuation scenarios
+/// on `base_world` and computes comparative KPI deltas against the Baseline scenario.
+pub fn evaluate_multi_scenario_resilience_diff(
+    base_world: &crate::traffic::SimulationWorld,
+    sim_seconds: f64,
+) -> ResilienceScorecardDiffReport {
+    use crate::evacuation_contraflow::{
+        run_evacuation_contraflow_monte_carlo, ContraflowReversalPolicy, EvacuationContraflowConfig,
+    };
+    use crate::zoning::apply_tod_upzoning_policy;
+
+    let t0 = Instant::now();
+    let sim_s = sim_seconds.clamp(1.0, 600.0);
+    let steps = ((sim_s / 0.1).round() as usize).max(10);
+
+    let stress_cfg = ResilienceStressConfig {
+        interdiction_depth: DisruptionInterdictionDepth::SingleLinkNMinus1,
+        max_candidate_corridors: 36,
+        ..ResilienceStressConfig::default()
+    };
+
+    let run_variant = |slug: &str,
+                       label: &str,
+                       tod: bool,
+                       max_pressure: bool,
+                       contraflow: bool|
+     -> ScenarioResilienceScorecardRow {
+        let mut w = base_world.clone();
+        if tod {
+            apply_tod_upzoning_policy(&mut w.parcels, &mut w.network);
+            w.transit_policy.headway_min = 5.0;
+            w.rebuild_cyclists();
+            w.refresh_urban_metrics();
+        }
+        if max_pressure {
+            w.network.enable_network_max_pressure();
+        }
+        for _ in 0..steps {
+            w.step(0.1);
+        }
+        let summary = w.summary_report(label);
+        let stress = evaluate_resilience_stress_test(
+            &w.network,
+            &w.parcels,
+            &w.emergency_facilities,
+            &w.evp_config,
+            &stress_cfg,
+        );
+        let mut evac_cfg = EvacuationContraflowConfig::default();
+        evac_cfg.medevac.surge.ffe.seismic.monte_carlo_trials = 25;
+        evac_cfg.contraflow_policy = if contraflow {
+            ContraflowReversalPolicy::EmsProtectedArterialContraflow
+        } else {
+            ContraflowReversalPolicy::NoContraflowBaseline
+        };
+        let evac = run_evacuation_contraflow_monte_carlo(
+            &w.network,
+            &w.parcels,
+            &w.emergency_facilities,
+            &w.evp_config,
+            &evac_cfg,
+        );
+
+        ScenarioResilienceScorecardRow {
+            scenario_slug: slug.to_string(),
+            scenario_label: label.to_string(),
+            mean_speed_mph: summary.mean_speed_mph,
+            delta_speed_vs_baseline_pct: 0.0,
+            throughput_veh_per_hr: summary.throughput_veh_per_hr,
+            delta_throughput_vs_baseline_pct: 0.0,
+            access_15min_pct: summary.environment.access_15min_pct,
+            delta_access_15min_pts: 0.0,
+            vsp_co2_kg_per_hr: summary.environment.co2_kg_per_hr,
+            delta_co2_vs_baseline_pct: 0.0,
+            net_fiscal_per_acre_k_yr: summary.ledger.net_fiscal_per_acre_k_yr,
+            delta_fiscal_vs_baseline_k_yr: 0.0,
+            nfpa_baseline_parcel_cov_pct: stress.baseline_parcel_cov_pct,
+            worst_n1_parcel_cov_pct: stress.worst_case_parcel_cov_pct,
+            resilience_pass_rate_pct: stress.resilience_pass_rate_pct,
+            delta_resilience_pass_pts: 0.0,
+            evac_t90_clearance_min: evac.t90_clearance_min,
+            delta_evac_t90_vs_baseline_min: 0.0,
+            ems_corridor_access_pct: evac.ems_lz_corridor_access_preserved_pct,
+            contraflow_lane_km_added: evac.contraflow_lane_km_added,
+        }
+    };
+
+    let mut rows = vec![
+        run_variant("baseline", "Status Quo Baseline", false, false, false),
+        run_variant("tod_upzone", "TOD Upzone + Frequent Transit", true, false, false),
+        run_variant("max_pressure", "Max-Pressure Adaptive Signals", false, true, false),
+        run_variant("contraflow", "Balanced Contraflow + Protected EMS", false, false, true),
+    ];
+
+    if let Some(base) = rows.first().cloned() {
+        for r in &mut rows {
+            r.delta_speed_vs_baseline_pct = pct_diff(r.mean_speed_mph, base.mean_speed_mph);
+            r.delta_throughput_vs_baseline_pct =
+                pct_diff(r.throughput_veh_per_hr, base.throughput_veh_per_hr);
+            r.delta_access_15min_pts = r.access_15min_pct - base.access_15min_pct;
+            r.delta_co2_vs_baseline_pct = pct_diff(r.vsp_co2_kg_per_hr, base.vsp_co2_kg_per_hr);
+            r.delta_fiscal_vs_baseline_k_yr =
+                r.net_fiscal_per_acre_k_yr - base.net_fiscal_per_acre_k_yr;
+            r.delta_resilience_pass_pts =
+                r.resilience_pass_rate_pct - base.resilience_pass_rate_pct;
+            r.delta_evac_t90_vs_baseline_min =
+                r.evac_t90_clearance_min - base.evac_t90_clearance_min;
+        }
+    }
+
+    ResilienceScorecardDiffReport {
+        city_label: base_world.network.city_label.clone(),
+        sim_seconds: sim_s,
+        solve_time_ms: t0.elapsed().as_secs_f64() * 1000.0,
+        rows,
+    }
+}
+
+impl ResilienceScorecardDiffReport {
+    pub fn to_csv_string(&self) -> String {
+        let mut out = String::from(RESILIENCE_DIFF_CSV_HEADER);
+        out.push('\n');
+        for r in &self.rows {
+            out.push_str(&format!(
+                "{},\"{}\",{:.3},{:+.2},{:.1},{:+.2},{:.2},{:+.2},{:.2},{:+.2},{:+.2},{:+.2},{:.2},{:.2},{:.2},{:+.2},{:.2},{:+.2},{:.2},{:.3}\n",
+                r.scenario_slug,
+                r.scenario_label,
+                r.mean_speed_mph,
+                r.delta_speed_vs_baseline_pct,
+                r.throughput_veh_per_hr,
+                r.delta_throughput_vs_baseline_pct,
+                r.access_15min_pct,
+                r.delta_access_15min_pts,
+                r.vsp_co2_kg_per_hr,
+                r.delta_co2_vs_baseline_pct,
+                r.net_fiscal_per_acre_k_yr,
+                r.delta_fiscal_vs_baseline_k_yr,
+                r.nfpa_baseline_parcel_cov_pct,
+                r.worst_n1_parcel_cov_pct,
+                r.resilience_pass_rate_pct,
+                r.delta_resilience_pass_pts,
+                r.evac_t90_clearance_min,
+                r.delta_evac_t90_vs_baseline_min,
+                r.ems_corridor_access_pct,
+                r.contraflow_lane_km_added,
+            ));
+        }
+        out
+    }
+
+    pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+
+    pub fn format_table(&self) -> String {
+        let mut out = format!(
+            "=== urban-grid Multi-Scenario Resilience Scorecard Diff ({}, {:.1}s, {:.1} ms) ===\n",
+            self.city_label, self.sim_seconds, self.solve_time_ms
+        );
+        out.push_str(&format!(
+            "{:<14} {:>8} {:>9} {:>8} {:>9} {:>9} {:>9} {:>9}\n",
+            "Scenario", "Mph", "dSpd%", "15mAcc%", "Pass%", "T90(m)", "dT90(m)", "CF_km"
+        ));
+        for r in &self.rows {
+            out.push_str(&format!(
+                "{:<14} {:>8.1} {:>+9.1} {:>8.1} {:>9.1} {:>9.1} {:>+9.1} {:>9.2}\n",
+                r.scenario_slug,
+                r.mean_speed_mph,
+                r.delta_speed_vs_baseline_pct,
+                r.access_15min_pct,
+                r.resilience_pass_rate_pct,
+                r.evac_t90_clearance_min,
+                r.delta_evac_t90_vs_baseline_min,
+                r.contraflow_lane_km_added,
+            ));
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hypercube::build_offset_dispatch_preferences;
+    use crate::network::{RoadNetwork, Vec2};
+    use crate::osm::{builtin_riverfront_bridges_osm, parse_osm_xml_str};
+    use crate::traffic::SimulationWorld;
+    use crate::utilities::evaluate_coupled_utility_grids;
+
+    #[test]
+    fn multi_scenario_resilience_diff_computes_deltas_and_exports_json_csv() {
+        let osm = parse_osm_xml_str(&builtin_riverfront_bridges_osm()).expect("builtin osm");
+        let world = SimulationWorld::new(RoadNetwork::compile(&osm));
+        let report = evaluate_multi_scenario_resilience_diff(&world, 10.0);
+        assert_eq!(report.rows.len(), 4);
+        assert_eq!(report.rows[0].scenario_slug, "baseline");
+        assert_eq!(report.rows[1].scenario_slug, "tod_upzone");
+        assert_eq!(report.rows[2].scenario_slug, "max_pressure");
+        assert_eq!(report.rows[3].scenario_slug, "contraflow");
+
+        assert!(report.rows[0].delta_speed_vs_baseline_pct.abs() < 1e-12);
+        assert!(report.rows[0].delta_evac_t90_vs_baseline_min.abs() < 1e-12);
+        assert!(report.rows[3].contraflow_lane_km_added > 0.0);
+
+        let csv = report.to_csv_string();
+        assert!(csv.starts_with(RESILIENCE_DIFF_CSV_HEADER));
+        assert_eq!(csv.lines().count(), 5);
+
+        let json_raw = report.to_json_pretty().expect("serialize resilience diff");
+        let parsed: ResilienceScorecardDiffReport =
+            serde_json::from_str(&json_raw).expect("deserialize resilience diff");
+        assert_eq!(parsed.rows.len(), 4);
+    }
+
+    #[test]
+    fn panic_hardening_guards_nan_elevations_and_empty_hypercube_offsets() {
+        let osm = parse_osm_xml_str(&builtin_riverfront_bridges_osm()).expect("builtin osm");
+        let net = RoadNetwork::compile(&osm);
+        let world = SimulationWorld::new(net.clone());
+
+        // Utility lifelines remain panic-free on valid network
+        let util = evaluate_coupled_utility_grids(
+            &net,
+            &world.parcels,
+            &world.emergency_facilities,
+            12.5,
+            &crate::utilities::UtilityGridsConfig::default(),
+        );
+        assert!(!util.node_telemetry.is_empty());
+
+        // Hypercube preference builder handles None offsets and NaN-containing unit times without panicking
+        let times = vec![vec![10.0, f64::NAN], vec![20.0, 15.0]];
+        let meta = vec![
+            ("U0".to_string(), 0usize, Vec2 { x: 0.0, y: 0.0 }),
+            ("U1".to_string(), 1usize, Vec2 { x: 100.0, y: 0.0 }),
+        ];
+        let pref = build_offset_dispatch_preferences(&meta, &times, 2, None, 0.25, None);
+        assert_eq!(pref.len(), 2);
+    }
+}

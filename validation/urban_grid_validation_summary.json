@@ -82,7 +82,7 @@
       "p90_travel_s": 58.16,
       "parcel_cov_pct": 100.0,
       "resident_cov_pct": 100.0,
-      "solve_time_ms": 219.22,
+      "solve_time_ms": 15.92,
       "target_met": true,
       "total_stations": 1
     },
@@ -140,7 +140,7 @@
         }
       ],
       "second_due_cov_pct": 100.0,
-      "solve_time_ms": 329.21,
+      "solve_time_ms": 39.4,
       "total_apparatus": 4,
       "total_stations": 4
     },

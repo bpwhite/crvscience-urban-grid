@@ -315,16 +315,7 @@ pub fn build_offset_dispatch_preferences(
 
     for j in 0..n_atoms {
         let mut order: Vec<usize> = (0..n_units).collect();
-        if !has_offsets {
-            order.sort_by(|&ua, &ub| {
-                let ta = unit_parcel_times_s[ua][j];
-                let tb = unit_parcel_times_s[ub][j];
-                ta.partial_cmp(&tb)
-                    .unwrap_or(Ordering::Equal)
-                    .then_with(|| ua.cmp(&ub))
-            });
-        } else {
-            let s_vec = unit_offsets_s.unwrap();
+        if let Some(s_vec) = unit_offsets_s.filter(|_| has_offsets) {
             let apos = atom_positions.and_then(|ap| ap.get(j).copied());
             // 1. Primary response district beat `u*(j) = argmin_u (t_{u,j} + s_u)` (Carter, Chaiken & Ignall 1972)
             let mut best_u = 0usize;
@@ -364,6 +355,14 @@ pub fn build_offset_dispatch_preferences(
                     .then_with(|| ua.cmp(&ub))
             });
             order.insert(0, best_u);
+        } else {
+            order.sort_by(|&ua, &ub| {
+                let ta = unit_parcel_times_s[ua][j];
+                let tb = unit_parcel_times_s[ub][j];
+                ta.partial_cmp(&tb)
+                    .unwrap_or(Ordering::Equal)
+                    .then_with(|| ua.cmp(&ub))
+            });
         }
         pref.push(order);
     }

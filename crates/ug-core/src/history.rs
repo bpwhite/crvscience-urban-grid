@@ -588,8 +588,7 @@ pub fn apply_edit_snapshot_to_world(world: &mut SimulationWorld, snap: &EditStat
                     if idx == 0 {
                         new_chain.push(t_seg);
                         updated_stops.push((stop_id, 0));
-                    } else {
-                        let prev = *new_chain.last().unwrap();
+                    } else if let Some(&prev) = new_chain.last() {
                         let sub = shortest_segment_chain(&world.network, prev, t_seg);
                         if !sub.is_empty() {
                             for &s in sub.iter().skip(1) {
@@ -597,6 +596,9 @@ pub fn apply_edit_snapshot_to_world(world: &mut SimulationWorld, snap: &EditStat
                             }
                             updated_stops.push((stop_id, new_chain.len() - 1));
                         }
+                    } else {
+                        new_chain.push(t_seg);
+                        updated_stops.push((stop_id, 0));
                     }
                 }
                 if !new_chain.is_empty() {
@@ -1018,8 +1020,7 @@ impl SimulationWorld {
                 if new_chain.is_empty() || idx == 0 {
                     new_chain.push(t_seg);
                     updated_stops.push((stop_id, new_chain.len() - 1));
-                } else {
-                    let prev = *new_chain.last().unwrap();
+                } else if let Some(&prev) = new_chain.last() {
                     let sub = shortest_segment_chain(&self.network, prev, t_seg);
                     if !sub.is_empty() {
                         for &s in sub.iter().skip(1) {
